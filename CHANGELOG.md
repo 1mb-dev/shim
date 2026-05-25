@@ -1,5 +1,29 @@
 # Changelog
 
-## Unreleased — Stage 0
+All notable changes will be documented here.
+Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-Initial scaffold. See `todos/shim-stage0-plan.md`.
+## [Unreleased] — Stage 0 (2026-05-25)
+
+Initial cut. Single static Go binary, zero runtime dependencies.
+
+### Added
+- `POST /v1/messages` — Anthropic Messages API, non-streaming and streaming (buffer-then-restream MVP).
+- `POST /v1/messages/count_tokens` — `chars/4` approximation.
+- `GET /health`.
+- Translation: system blocks, user/assistant text, image content (base64 + URL), `stop_sequences`, `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
+- DeepSeek upstream adapter; new providers add one file via the registry.
+- Redacted JSON logs via `log/slog` (default-on; `LOG_REDACT=false` for opt-in debugging).
+- Zero-dep `.env` loader; body-size cap (default 1 MiB); inbound `Authorization` header discarded (shim auths upstream itself).
+- `shim run [args...]` launcher: locate `claude`, inject env vars, exec.
+- Cross-compiled binaries for `darwin/arm64`, `linux/amd64`, `linux/arm64`.
+- MIT license.
+
+### Not yet (returns a clear error)
+- Extended thinking blocks → HTTP 501.
+- Prompt-caching markers, housekeeping short-circuits, multi-adapter shipping — see README "What doesn't (yet)".
+
+### Known limitations (tracked for Stage 1)
+- Streaming is buffer-then-restream, not true per-token SSE pass-through.
+- Server uses `http.DefaultClient`; the DeepSeek adapter's tuned client is not yet routed through the Adapter interface.
+- Token counting is `chars/4` approximation; exact tokenizer (cl100k_base) lands at the measurement-stage boundary.

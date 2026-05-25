@@ -69,6 +69,22 @@ Copy `.env.example` to `.env` and fill in `UPSTREAM_API_KEY`. All variables:
 | `LOG_REDACT` | `true` | Scrub secrets and prompt content from logs. Set `false` for local debugging only. |
 | `MAX_REQUEST_BYTES` | `1048576` | Oversize body returns HTTP 413 Anthropic-shaped error. |
 
+## Security model
+
+shim has **no built-in authentication.** It trusts the network boundary
+between itself and the client. Defaults assume one user, one machine:
+`BIND_ADDR=127.0.0.1` is loopback-only, and the inbound `Authorization`
+header is discarded (shim authenticates upstream with `UPSTREAM_API_KEY`
+from `.env`).
+
+If you bind to a non-loopback address, anyone on that network can route
+through shim, burning your upstream quota and exposing prompt content.
+Don't do it without an authenticating reverse proxy in front.
+
+Logs scrub `Authorization`, prompt/message content, URL query strings,
+and credential-shaped keys by default (`LOG_REDACT=true`). Set
+`LOG_REDACT=false` only for local debugging.
+
 ## Run
 
 Two ways:
@@ -137,4 +153,4 @@ import in `cmd/shim/main.go` and a config switch on `ADAPTER`.
 
 ## License
 
-(TBD before public release.)
+[MIT](LICENSE).
