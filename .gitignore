@@ -1,0 +1,35 @@
+# Working notes (private, never committed)
+todos/
+
+# Local env
+.env
+.env.local
+
+# Build artifacts
+/dist/
+/build/
+/bin/
+shim
+shim.exe
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code local settings
+.claude/
+
+# Go (additions for shim)
+vendor/
+go.work
+go.work.sum
