@@ -171,21 +171,45 @@ func TestMessages_Happy(t *testing.T) {
 	}
 }
 
-func TestMessages_StreamRejected(t *testing.T) {
+func TestMessages_StreamSucceeds(t *testing.T) {
 	s := newStub()
 	defer s.close()
 	srv, logBuf := newTestServer(t, s)
 
-	body := `{"model":"x","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	body := `{"model":"claude-3-5","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
 	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != http.StatusNotImplemented {
-		t.Errorf("status = %d, want 501", rec.Code)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "streaming") {
-		t.Errorf("body should explain streaming: %s", rec.Body.String())
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", got)
 	}
+
+	// Walk events in order: message_start, content_block_start,
+	// content_block_delta, content_block_stop, message_delta, message_stop.
+	body2 := rec.Body.String()
+	wantEvents := []string{
+		"event: message_start",
+		"event: content_block_start",
+		"event: content_block_delta",
+		"event: content_block_stop",
+		"event: message_delta",
+		"event: message_stop",
+	}
+	pos := 0
+	for _, want := range wantEvents {
+		idx := strings.Index(body2[pos:], want)
+		if idx < 0 {
+			t.Errorf("missing or out-of-order event %q in:\n%s", want, body2)
+			return
+		}
+		pos += idx + len(want)
+	}
+
+	// Original prompt content must NOT leak into logs (redaction check
+	// applies on streaming path too).
 	if strings.Contains(logBuf.String(), `"hi"`) {
-		t.Errorf("log leaked prompt body on 501 path: %s", logBuf.String())
+		t.Errorf("log leaked prompt body on streaming path: %s", logBuf.String())
 	}
 }
 

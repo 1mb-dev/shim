@@ -41,12 +41,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Stream {
-		writeError(w, s.log, http.StatusNotImplemented, errInvalidRequest,
-			"streaming not yet supported in v0")
-		return
-	}
-
 	if containsThinkingBlock(req.Messages) {
 		writeError(w, s.log, http.StatusNotImplemented, errInvalidRequest,
 			"extended thinking not yet supported")
@@ -56,6 +50,11 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Adapter checks before doing work.
 	if err := s.preflightAdapter(); err != nil {
 		writeError(w, s.log, http.StatusUnauthorized, errAuthentication, err.Error())
+		return
+	}
+
+	if req.Stream {
+		s.handleMessagesStream(w, r, &req)
 		return
 	}
 
