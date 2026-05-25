@@ -15,12 +15,12 @@ silently misbehaving.
 
 ## What works
 
-- `POST /v1/messages` — Anthropic Messages API (non-streaming).
+- `POST /v1/messages` — Anthropic Messages API. Non-streaming AND streaming (`{"stream": true}` returns the canonical Anthropic SSE event sequence: `message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` → `message_delta` → `message_stop`).
 - `POST /v1/messages/count_tokens` — approximate token count (see [Measurement](#measurement)).
 - `GET /health` — `{"status":"ok"}`.
 - Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences`, `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
 - One adapter: **DeepSeek** (`https://api.deepseek.com/v1`).
-- `shim run [args...]` launcher: locates `claude` on PATH, injects `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY=shim`, execs it, propagates exit code.
+- `shim run [args...]` launcher: locates `claude` on PATH, injects `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY=shim`, execs it, propagates exit code. Tested end-to-end with `claude --bare -p`.
 - Redacted-by-default JSON logs via `log/slog`. `Authorization`, prompt/message content, URL query strings, and credential-shaped keys are scrubbed at log-write time.
 - Cross-compiled binaries: `darwin/arm64`, `linux/amd64`, `linux/arm64`.
 
@@ -28,12 +28,13 @@ silently misbehaving.
 
 These all return a clear error — never silent forwarding.
 
-- **Streaming.** `{"stream": true}` returns HTTP 501 with message `streaming not yet supported in v0`.
 - **Extended thinking.** Requests containing `{"type": "thinking", ...}` content blocks return HTTP 501 with message `extended thinking not yet supported`.
 - **Prompt caching markers.** Not translated.
 - **Housekeeping short-circuits** (e.g. quota probes, title generation). Forwarded to upstream as normal traffic.
 - **Multiple adapters.** Only DeepSeek in Stage 0.
 - **TUI / GUI / chatbot wrappers.** Not in scope.
+
+**Streaming caveat:** Stage 0 ships a buffer-then-restream MVP — shim drives the upstream as non-streaming, then emits the canonical Anthropic SSE event sequence in one burst. Clients see the right protocol; per-token latency benefit lands when true upstream SSE pass-through ships.
 
 ## Install
 
