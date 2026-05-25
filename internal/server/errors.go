@@ -40,7 +40,7 @@ func writeError(w http.ResponseWriter, log *slog.Logger, status int, typ, msg st
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	encodeErr := json.NewEncoder(w).Encode(body)
 
 	if log != nil {
 		log.Error("request failed",
@@ -48,6 +48,9 @@ func writeError(w http.ResponseWriter, log *slog.Logger, status int, typ, msg st
 			slog.String("error_type", typ),
 			slog.String("message", msg),
 		)
+		if encodeErr != nil {
+			log.Error("error-response encode failed", slog.String("error", encodeErr.Error()))
+		}
 	}
 }
 

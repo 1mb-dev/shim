@@ -3,9 +3,9 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -108,7 +108,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(anthropicResp)
+	if err := json.NewEncoder(w).Encode(anthropicResp); err != nil {
+		// Headers already committed; can't change status. Log for visibility.
+		s.log.Error("response encode failed", slog.String("path", "/v1/messages"), slog.String("error", err.Error()))
+	}
 }
 
 // handleCountTokens — POST /v1/messages/count_tokens → {"input_tokens": N}.
@@ -140,7 +143,9 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 
 	n := tokens.Approximate(strings.Join(parts, " "))
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]int{"input_tokens": n})
+	if err := json.NewEncoder(w).Encode(map[string]int{"input_tokens": n}); err != nil {
+		s.log.Error("response encode failed", slog.String("path", "/v1/messages/count_tokens"), slog.String("error", err.Error()))
+	}
 }
 
 // readBody reads and caps the request body, converting MaxBytesReader
@@ -175,7 +180,7 @@ func (s *Server) readBody(r *http.Request, w http.ResponseWriter) ([]byte, error
 func (s *Server) preflightAdapter() error {
 	if _, err := s.adapter.BuildRequest(context.Background(), []byte(`{}`)); err != nil {
 		if strings.Contains(err.Error(), "API_KEY") || strings.Contains(err.Error(), "not configured") {
-			return errors.New(err.Error())
+			return err
 		}
 	}
 	return nil
