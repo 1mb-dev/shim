@@ -1,0 +1,225 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/vnykmshr/shim/internal/tokens"
+	"github.com/vnykmshr/shim/internal/translate"
+)
+
+// handleHealth — GET /health → {"status":"ok"}.
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// handleMessages — POST /v1/messages.
+//
+// Flow: read+cap body → parse → reject streaming/thinking → translate to
+// OpenAI → adapter.BuildRequest → client.Do → adapter.NormalizeResponse →
+// translate back to Anthropic → write JSON.
+//
+// Every loud-fail path emits an Anthropic-shaped error and logs the event
+// with redacted attrs.
+func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	body, err := s.readBody(r, w)
+	if err != nil {
+		// readBody already wrote the response.
+		return
+	}
+
+	var req translate.AnthropicRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
+			"malformed JSON body: "+err.Error())
+		return
+	}
+
+	if req.Stream {
+		writeError(w, s.log, http.StatusNotImplemented, errInvalidRequest,
+			"streaming not yet supported in v0")
+		return
+	}
+
+	if containsThinkingBlock(req.Messages) {
+		writeError(w, s.log, http.StatusNotImplemented, errInvalidRequest,
+			"extended thinking not yet supported")
+		return
+	}
+
+	// Adapter checks before doing work.
+	if err := s.preflightAdapter(); err != nil {
+		writeError(w, s.log, http.StatusUnauthorized, errAuthentication, err.Error())
+		return
+	}
+
+	openaiReq, err := translate.AnthropicToOpenAI(&req)
+	if err != nil {
+		writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
+			"translation: "+err.Error())
+		return
+	}
+	openaiReq.Model = s.adapter.MapModel(req.Model)
+
+	openaiBody, err := json.Marshal(openaiReq)
+	if err != nil {
+		writeError(w, s.log, http.StatusInternalServerError, errAPI,
+			"failed to encode upstream request")
+		return
+	}
+
+	httpReq, err := s.adapter.BuildRequest(r.Context(), openaiBody)
+	if err != nil {
+		writeError(w, s.log, http.StatusInternalServerError, errAPI,
+			"build upstream request: "+err.Error())
+		return
+	}
+
+	upstream, err := s.client.Do(httpReq)
+	if err != nil {
+		writeError(w, s.log, http.StatusBadGateway, errAPI,
+			"upstream unreachable: "+err.Error())
+		return
+	}
+
+	normalised, err := s.adapter.NormalizeResponse(upstream)
+	if err != nil {
+		s.writeUpstreamError(w, upstream.StatusCode, normalised, err)
+		return
+	}
+
+	var openaiResp translate.OpenAIResponse
+	if err := json.Unmarshal(normalised, &openaiResp); err != nil {
+		writeError(w, s.log, http.StatusBadGateway, errAPI,
+			"upstream returned malformed JSON: "+err.Error())
+		return
+	}
+
+	anthropicResp, err := translate.OpenAIToAnthropic(&openaiResp, req.Model)
+	if err != nil {
+		writeError(w, s.log, http.StatusInternalServerError, errAPI,
+			"translation back: "+err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(anthropicResp)
+}
+
+// handleCountTokens — POST /v1/messages/count_tokens → {"input_tokens": N}.
+// Stage 0 uses chars/4 approximation; the README discloses this adjacent
+// to the usage.*_tokens docs.
+func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
+	body, err := s.readBody(r, w)
+	if err != nil {
+		return
+	}
+
+	var req translate.AnthropicRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
+			"malformed JSON body: "+err.Error())
+		return
+	}
+
+	// Flatten everything we can to a single concatenated string for the
+	// approximation. We rely on the slog redactor to keep sensitive content
+	// out of any debug logging that runs alongside this path.
+	var parts []string
+	if len(req.System) > 0 {
+		parts = append(parts, string(req.System))
+	}
+	for _, m := range req.Messages {
+		parts = append(parts, string(m.Content))
+	}
+
+	n := tokens.Approximate(strings.Join(parts, " "))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]int{"input_tokens": n})
+}
+
+// readBody reads and caps the request body, converting MaxBytesReader
+// errors into Anthropic-shaped 413s. On error it has already written the
+// response; callers should return.
+func (s *Server) readBody(r *http.Request, w http.ResponseWriter) ([]byte, error) {
+	limit := s.cfg.MaxRequestBytes
+	if limit <= 0 {
+		limit = 1 << 20 // 1 MiB safety default
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	defer r.Body.Close()
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		if isMaxBytesError(err) {
+			writeError(w, s.log, http.StatusRequestEntityTooLarge, errInvalidRequest,
+				fmt.Sprintf("request body exceeds MAX_REQUEST_BYTES=%d", limit))
+		} else {
+			writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
+				"read body: "+err.Error())
+		}
+		return nil, err
+	}
+	return body, nil
+}
+
+// preflightAdapter checks the configured adapter has its key. We don't dive
+// inside the adapter struct — we attempt a no-op BuildRequest with empty
+// body and surface the resulting error if the adapter complains about
+// missing config.
+func (s *Server) preflightAdapter() error {
+	if _, err := s.adapter.BuildRequest(context.Background(), []byte(`{}`)); err != nil {
+		if strings.Contains(err.Error(), "API_KEY") || strings.Contains(err.Error(), "not configured") {
+			return errors.New(err.Error())
+		}
+	}
+	return nil
+}
+
+// writeUpstreamError translates a non-2xx upstream response into the right
+// Anthropic-shaped error class. The upstream body is NOT echoed (it can
+// contain prompt content or other sensitive material).
+func (s *Server) writeUpstreamError(w http.ResponseWriter, upstreamStatus int, _ []byte, err error) {
+	switch {
+	case upstreamStatus == http.StatusUnauthorized || upstreamStatus == http.StatusForbidden:
+		writeError(w, s.log, http.StatusUnauthorized, errAuthentication,
+			fmt.Sprintf("upstream rejected the API key (status %d)", upstreamStatus))
+	case upstreamStatus == http.StatusTooManyRequests:
+		writeError(w, s.log, http.StatusTooManyRequests, errRateLimit,
+			"upstream rate limited")
+	case upstreamStatus >= 500:
+		writeError(w, s.log, http.StatusBadGateway, errAPI,
+			fmt.Sprintf("upstream unavailable (status %d)", upstreamStatus))
+	default:
+		writeError(w, s.log, http.StatusBadGateway, errAPI,
+			"upstream error: "+err.Error())
+	}
+}
+
+func containsThinkingBlock(msgs []translate.AnthropicMessage) bool {
+	for _, m := range msgs {
+		if len(m.Content) == 0 || m.Content[0] != '[' {
+			continue
+		}
+		// Cheap scan rather than parsing the full structure twice — looks
+		// for a top-level "thinking" type token. Conservative: false
+		// negatives are acceptable (the translator will reject downstream),
+		// false positives would block legitimate traffic and are rejected.
+		var blocks []translate.AnthropicBlock
+		if err := json.Unmarshal(m.Content, &blocks); err != nil {
+			continue
+		}
+		for _, b := range blocks {
+			if b.Type == "thinking" {
+				return true
+			}
+		}
+	}
+	return false
+}
