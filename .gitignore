@@ -9,8 +9,8 @@ todos/
 /dist/
 /build/
 /bin/
-shim
-shim.exe
+/shim
+/shim.exe
 
 # Test artifacts
 *.test
