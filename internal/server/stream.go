@@ -51,6 +51,7 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	openaiReq.Model = s.adapter.MapModel(req.Model)
+	s.logModelRewrite(req.Model, openaiReq.Model)
 	openaiReq.Stream = false // MVP: buffer-then-restream
 
 	openaiBody, err := json.Marshal(openaiReq)

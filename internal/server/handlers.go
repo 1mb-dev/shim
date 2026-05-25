@@ -13,10 +13,29 @@ import (
 	"github.com/1mb-dev/shim/internal/translate"
 )
 
+// maxStopSequences is the OpenAI-imposed cap on stop[] entries. Requests
+// over this are truncated at the server boundary with a warn log rather
+// than forwarded to a 400 that looks like a shim bug.
+const maxStopSequences = 4
+
 // handleHealth — GET /health → {"status":"ok"}.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// logModelRewrite emits a breadcrumb when the adapter rewrites the
+// requested model name. Stage 0 thesis-2: never silently forward modified
+// traffic.
+func (s *Server) logModelRewrite(requested, resolved string) {
+	if requested == "" || requested == resolved {
+		return
+	}
+	s.log.Info("model rewritten",
+		slog.String("requested", requested),
+		slog.String("resolved", resolved),
+		slog.String("adapter", s.adapter.Name()),
+	)
 }
 
 // handleMessages — POST /v1/messages.
@@ -39,6 +58,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
 			"malformed JSON body: "+err.Error())
 		return
+	}
+
+	// OpenAI-compatible upstreams reject stop arrays larger than 4 with a
+	// 400 that looks like a shim bug; cap loudly per thesis-2.
+	if n := len(req.StopSequences); n > maxStopSequences {
+		s.log.Warn("stop_sequences truncated",
+			slog.Int("from", n),
+			slog.Int("to", maxStopSequences),
+		)
+		req.StopSequences = req.StopSequences[:maxStopSequences]
 	}
 
 	if containsThinkingBlock(req.Messages) {
@@ -65,6 +94,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	openaiReq.Model = s.adapter.MapModel(req.Model)
+	s.logModelRewrite(req.Model, openaiReq.Model)
 
 	openaiBody, err := json.Marshal(openaiReq)
 	if err != nil {

@@ -424,6 +424,63 @@ func TestMessages_UpstreamMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestMessages_StopSequencesCapped(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, logBuf := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"stop_sequences":["a","b","c","d","e","f"],"messages":[{"role":"user","content":"hi"}]}`
+	rec := doPOST(srv, "/v1/messages", body)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(logBuf.String(), `"stop_sequences truncated"`) {
+		t.Errorf("warn log not emitted: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), `"from":6`) {
+		t.Errorf("warn log missing from=6: %s", logBuf.String())
+	}
+}
+
+func TestMessages_ModelRewriteLogged(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, logBuf := newTestServer(t, s)
+
+	body := `{"model":"claude-3-opus","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	rec := doPOST(srv, "/v1/messages", body)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(logBuf.String(), `"model rewritten"`) {
+		t.Errorf("model rewrite not logged: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), `"requested":"claude-3-opus"`) {
+		t.Errorf("rewrite log missing requested key: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), `"resolved":"stub-model"`) {
+		t.Errorf("rewrite log missing resolved key: %s", logBuf.String())
+	}
+}
+
+// TestMessages_NoRewriteLogWhenIdentical: when client sends the model name
+// the adapter happens to resolve to, no rewrite line — keeps the log honest
+// rather than noisy.
+func TestMessages_NoRewriteLogWhenIdentical(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, logBuf := newTestServer(t, s)
+
+	body := `{"model":"stub-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	rec := doPOST(srv, "/v1/messages", body)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(logBuf.String(), `"model rewritten"`) {
+		t.Errorf("rewrite log should not fire when names match: %s", logBuf.String())
+	}
+}
+
 func TestCountTokens(t *testing.T) {
 	s := newStub()
 	defer s.close()
