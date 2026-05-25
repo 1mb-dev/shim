@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/vnykmshr/shim/internal/tokens"
-	"github.com/vnykmshr/shim/internal/translate"
+	"github.com/1mb-dev/shim/internal/tokens"
+	"github.com/1mb-dev/shim/internal/translate"
 )
 
 // handleHealth — GET /health → {"status":"ok"}.

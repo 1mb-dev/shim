@@ -20,11 +20,11 @@ import (
 	"time"
 
 	// Adapter registration via init().
-	"github.com/vnykmshr/shim/internal/adapter/deepseek"
-	"github.com/vnykmshr/shim/internal/config"
-	"github.com/vnykmshr/shim/internal/launcher"
-	"github.com/vnykmshr/shim/internal/obslog"
-	"github.com/vnykmshr/shim/internal/server"
+	"github.com/1mb-dev/shim/internal/adapter/deepseek"
+	"github.com/1mb-dev/shim/internal/config"
+	"github.com/1mb-dev/shim/internal/launcher"
+	"github.com/1mb-dev/shim/internal/obslog"
+	"github.com/1mb-dev/shim/internal/server"
 )
 
 func main() {

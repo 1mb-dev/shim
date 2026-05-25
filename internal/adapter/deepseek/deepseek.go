@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vnykmshr/shim/internal/adapter"
+	"github.com/1mb-dev/shim/internal/adapter"
 )
 
 const (

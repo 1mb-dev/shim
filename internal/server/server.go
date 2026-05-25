@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/vnykmshr/shim/internal/adapter"
-	"github.com/vnykmshr/shim/internal/config"
+	"github.com/1mb-dev/shim/internal/adapter"
+	"github.com/1mb-dev/shim/internal/config"
 )
 
 // clientProvider is the optional-interface extension adapters use to supply

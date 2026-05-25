@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/vnykmshr/shim/internal/translate"
+	"github.com/1mb-dev/shim/internal/translate"
 )
 
 // writeSSE emits the ordered Anthropic SSE events to w using the documented

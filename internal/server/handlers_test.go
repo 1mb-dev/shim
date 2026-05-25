@@ -13,8 +13,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/vnykmshr/shim/internal/adapter"
-	"github.com/vnykmshr/shim/internal/config"
+	"github.com/1mb-dev/shim/internal/adapter"
+	"github.com/1mb-dev/shim/internal/config"
 )
 
 // stub is an Adapter test double the server can drive without DeepSeek.

@@ -4,7 +4,7 @@
 // Adding a new provider is a single self-contained sub-package:
 //
 //	package myprovider
-//	import "github.com/vnykmshr/shim/internal/adapter"
+//	import "github.com/1mb-dev/shim/internal/adapter"
 //	func init() { adapter.Register(&Adapter{}) }
 //
 // The server enables a provider via a blank import in cmd/shim/main.go.

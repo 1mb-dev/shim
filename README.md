@@ -39,13 +39,13 @@ These all return a clear error — never silent forwarding.
 ## Install
 
 ```sh
-go install github.com/vnykmshr/shim/cmd/shim@latest
+go install github.com/1mb-dev/shim/cmd/shim@latest
 ```
 
 Or from source:
 
 ```sh
-git clone https://github.com/vnykmshr/shim
+git clone https://github.com/1mb-dev/shim
 cd shim
 make build              # → ./shim
 make build-all          # → dist/shim-darwin-arm64, dist/shim-linux-{amd64,arm64}
