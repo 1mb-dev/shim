@@ -62,6 +62,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      70 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1 MiB; matches net/http default, made explicit to pair with MAX_REQUEST_BYTES.
 	}
 	return s, nil
 }

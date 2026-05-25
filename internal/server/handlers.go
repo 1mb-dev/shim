@@ -77,7 +77,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Adapter checks before doing work.
-	if err := s.preflightAdapter(); err != nil {
+	if err := s.preflightAdapter(r.Context()); err != nil {
 		writeError(w, s.log, http.StatusUnauthorized, errAuthentication, err.Error())
 		return
 	}
@@ -206,9 +206,11 @@ func (s *Server) readBody(r *http.Request, w http.ResponseWriter) ([]byte, error
 // preflightAdapter checks the configured adapter has its key. We don't dive
 // inside the adapter struct — we attempt a no-op BuildRequest with empty
 // body and surface the resulting error if the adapter complains about
-// missing config.
-func (s *Server) preflightAdapter() error {
-	if _, err := s.adapter.BuildRequest(context.Background(), []byte(`{}`)); err != nil {
+// missing config. ctx is the inbound request context so client cancellation
+// reaches the preflight path; the substring-match backchannel is a known
+// interface-design debt tracked for Stage 1.
+func (s *Server) preflightAdapter(ctx context.Context) error {
+	if _, err := s.adapter.BuildRequest(ctx, []byte(`{}`)); err != nil {
 		if strings.Contains(err.Error(), "API_KEY") || strings.Contains(err.Error(), "not configured") {
 			return err
 		}
