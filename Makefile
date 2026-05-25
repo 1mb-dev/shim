@@ -6,9 +6,10 @@ GOFLAGS   := -trimpath
 LDFLAGS   := -s -w
 BUILD_DIR := dist
 
-# Resolve tools from GOPATH/bin so callers don't need it on PATH.
+# Resolve golangci-lint: prefer PATH (common on dev boxes via brew/install
+# script), fall back to GOPATH/bin.
 GOBIN     := $(shell go env GOPATH)/bin
-LINT      := $(GOBIN)/golangci-lint
+LINT      := $(shell command -v golangci-lint 2>/dev/null || echo $(GOBIN)/golangci-lint)
 
 # Stage 0 cross-compile matrix (3 platforms — see plan §AC 2 amendment).
 PLATFORMS := darwin/arm64 linux/amd64 linux/arm64

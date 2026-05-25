@@ -1,26 +1,41 @@
-# golangci-lint config (v1 schema).
-# Stage 0: stdlib-leaning project; standard linters + a few correctness-focused extras.
-
+# golangci-lint v2 config. Stage 0: stdlib-leaning project; standard
+# correctness linters. Migrated from v1 schema 2026-05-25 (gosimple folded
+# into staticcheck in v2; gofmt/goimports moved to the formatters block).
+version: "2"
 run:
-  timeout: 3m
   tests: true
-
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
+    - misspell
     - staticcheck
+    - unconvert
     - unused
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
     - gofmt
     - goimports
-    - misspell
-    - unconvert
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
