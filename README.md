@@ -1,9 +1,139 @@
 # shim
 
-Go-native proxy that lets Claude Code run against any OpenAI-compatible model
-provider via `ANTHROPIC_BASE_URL`.
+A Go-native proxy that lets Claude Code run against any OpenAI-compatible
+model provider. Set `ANTHROPIC_BASE_URL` to point at shim, and Claude Code's
+Messages-API requests get translated into OpenAI ChatCompletions and routed
+to your configured upstream (Stage 0 ships one adapter: DeepSeek).
 
-**Status: Stage 0 — in development.**
+Single static binary. Zero runtime dependencies. Stdlib-leaning.
 
-The full README lands at step 10 of Stage 0. See `todos/shim-stage0-plan.md`
-for the build plan.
+**Status: Stage 0 (in development).** What's listed under "What works" is
+what's wired. Anything in "What doesn't" returns a clear error rather than
+silently misbehaving.
+
+---
+
+## What works
+
+- `POST /v1/messages` — Anthropic Messages API (non-streaming).
+- `POST /v1/messages/count_tokens` — approximate token count (see [Measurement](#measurement)).
+- `GET /health` — `{"status":"ok"}`.
+- Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences`, `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
+- One adapter: **DeepSeek** (`https://api.deepseek.com/v1`).
+- `shim run [args...]` launcher: locates `claude` on PATH, injects `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY=shim`, execs it, propagates exit code.
+- Redacted-by-default JSON logs via `log/slog`. `Authorization`, prompt/message content, URL query strings, and credential-shaped keys are scrubbed at log-write time.
+- Cross-compiled binaries: `darwin/arm64`, `linux/amd64`, `linux/arm64`.
+
+## What doesn't (yet)
+
+These all return a clear error — never silent forwarding.
+
+- **Streaming.** `{"stream": true}` returns HTTP 501 with message `streaming not yet supported in v0`.
+- **Extended thinking.** Requests containing `{"type": "thinking", ...}` content blocks return HTTP 501 with message `extended thinking not yet supported`.
+- **Prompt caching markers.** Not translated.
+- **Housekeeping short-circuits** (e.g. quota probes, title generation). Forwarded to upstream as normal traffic.
+- **Multiple adapters.** Only DeepSeek in Stage 0.
+- **TUI / GUI / chatbot wrappers.** Not in scope.
+
+## Install
+
+```sh
+go install github.com/vnykmshr/shim/cmd/shim@latest
+```
+
+Or from source:
+
+```sh
+git clone https://github.com/vnykmshr/shim
+cd shim
+make build              # → ./shim
+make build-all          # → dist/shim-darwin-arm64, dist/shim-linux-{amd64,arm64}
+```
+
+Requires Go 1.22+.
+
+## Config
+
+Copy `.env.example` to `.env` and fill in `UPSTREAM_API_KEY`. All variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BIND_ADDR` | `127.0.0.1` | Listen address. **Do not bind 0.0.0.0** unless you accept that the proxy carries your upstream API key and has no auth of its own. |
+| `PORT` | `8082` | TCP port. |
+| `ADAPTER` | `deepseek` | Adapter to use. Stage 0 only registers `deepseek`. |
+| `UPSTREAM_API_KEY` | _required_ | Bearer token sent to the upstream. |
+| `UPSTREAM_BASE_URL` | `https://api.deepseek.com/v1` | Upstream root. |
+| `UPSTREAM_MODEL` | (empty) | Override default model (`deepseek-chat`). Set to `deepseek-reasoner` for R1. |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
+| `LOG_REDACT` | `true` | Scrub secrets and prompt content from logs. Set `false` for local debugging only. |
+| `MAX_REQUEST_BYTES` | `1048576` | Oversize body returns HTTP 413 Anthropic-shaped error. |
+
+## Run
+
+Two ways:
+
+**Manual.** Start the server, point Claude Code at it:
+
+```sh
+./shim &
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8082
+export ANTHROPIC_API_KEY=shim   # any non-empty value works; shim auths upstream itself
+claude
+```
+
+**Launcher.** `shim run` sets both vars and execs claude in one step:
+
+```sh
+./shim &
+./shim run "write a hello-world go program"
+```
+
+The launcher prints a single breadcrumb line to stderr (`shim run → claude=/path/to/claude, base=http://...`) so you can see what it resolved before claude's own output starts.
+
+## Measurement
+
+The Stage 0 `count_tokens` endpoint and the `usage` field on responses use
+an **approximation** — `len(text) / 4` per the OpenAI tokenizer guidance.
+This is sufficient for in-session sanity checks but is **not** a substitute
+for a real tokenizer when calculating bills. The exact tokenizer (cl100k_base
+via `pkoukk/tiktoken-go`) lands at the measurement-stage boundary, not in
+Stage 0.
+
+Response usage shape (Anthropic Messages contract):
+
+```json
+{
+  "usage": {
+    "input_tokens": 123,
+    "output_tokens": 45
+  }
+}
+```
+
+Source values come from the upstream's `usage.prompt_tokens` and
+`usage.completion_tokens` — they reflect whatever the upstream reports, not
+a shim-side recount.
+
+## Project layout
+
+```
+cmd/shim/             # CLI entry: shim, shim run
+internal/
+  config/             # zero-dep .env loader
+  obslog/             # log/slog with redaction
+  adapter/            # interface + registry
+    deepseek/         # Stage 0 adapter
+  translate/          # Anthropic ↔ OpenAI
+  tokens/             # approximation
+  launcher/           # shim run
+  server/             # HTTP server + handlers + error taxonomy
+testdata/fixtures/    # recorded upstream responses for tests
+```
+
+Adding a provider is a new sub-package under `internal/adapter/` that
+implements `adapter.Adapter` and registers itself in `init()`. Add a blank
+import in `cmd/shim/main.go` and a config switch on `ADAPTER`.
+
+## License
+
+(TBD before public release.)
