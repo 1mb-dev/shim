@@ -32,12 +32,16 @@ build-all: clean
 		echo "built $$out"; \
 	done
 
-# Default `test` runs with -race per plan §2 (every package, every run).
+# Default `test` runs with -race per plan §2. Override on platforms where
+# the race detector is unavailable (e.g. linux/arm64 on a kernel with
+# 47-bit VMA): `make test RACE=`.
+RACE ?= -race
+
 test:
-	go test -race ./...
+	go test $(RACE) ./...
 
 coverage:
-	go test -race -coverprofile=cover.out ./...
+	go test $(RACE) -coverprofile=cover.out ./...
 	@go tool cover -func=cover.out | tail -1
 
 lint:
