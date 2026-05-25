@@ -171,6 +171,36 @@ func TestMessages_Happy(t *testing.T) {
 	}
 }
 
+// sseEvent is a parsed SSE frame from an event: / data: line pair.
+type sseEvent struct {
+	name string
+	data string
+}
+
+// parseSSE splits a response body into ordered events. Blank-line separated;
+// uses the documented `event:` / `data:` line prefixes.
+func parseSSE(body string) []sseEvent {
+	var out []sseEvent
+	for _, block := range strings.Split(body, "\n\n") {
+		if block == "" {
+			continue
+		}
+		var ev sseEvent
+		for _, line := range strings.Split(block, "\n") {
+			if n, ok := strings.CutPrefix(line, "event: "); ok {
+				ev.name = n
+			}
+			if d, ok := strings.CutPrefix(line, "data: "); ok {
+				ev.data = d
+			}
+		}
+		if ev.name != "" {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
 func TestMessages_StreamSucceeds(t *testing.T) {
 	s := newStub()
 	defer s.close()
@@ -185,31 +215,82 @@ func TestMessages_StreamSucceeds(t *testing.T) {
 		t.Errorf("Content-Type = %q, want text/event-stream", got)
 	}
 
-	// Walk events in order: message_start, content_block_start,
-	// content_block_delta, content_block_stop, message_delta, message_stop.
-	body2 := rec.Body.String()
-	wantEvents := []string{
-		"event: message_start",
-		"event: content_block_start",
-		"event: content_block_delta",
-		"event: content_block_stop",
-		"event: message_delta",
-		"event: message_stop",
+	events := parseSSE(rec.Body.String())
+	wantNames := []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
 	}
-	pos := 0
-	for _, want := range wantEvents {
-		idx := strings.Index(body2[pos:], want)
-		if idx < 0 {
-			t.Errorf("missing or out-of-order event %q in:\n%s", want, body2)
-			return
+	if len(events) != len(wantNames) {
+		t.Fatalf("event count = %d, want %d; body:\n%s", len(events), len(wantNames), rec.Body.String())
+	}
+	for i, want := range wantNames {
+		if events[i].name != want {
+			t.Errorf("event[%d].name = %q, want %q", i, events[i].name, want)
 		}
-		pos += idx + len(want)
+		// Every data payload must be parseable JSON.
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(events[i].data), &obj); err != nil {
+			t.Errorf("event[%d] data not JSON: %q (%v)", i, events[i].data, err)
+		}
 	}
 
 	// Original prompt content must NOT leak into logs (redaction check
 	// applies on streaming path too).
 	if strings.Contains(logBuf.String(), `"hi"`) {
 		t.Errorf("log leaked prompt body on streaming path: %s", logBuf.String())
+	}
+}
+
+// TestMessages_StreamUpstreamError verifies that an upstream failure BEFORE
+// the SSE stream begins surfaces as a JSON Anthropic-shaped error, not as
+// an SSE frame. The client must see a clean 502 with non-streaming content
+// type so retry logic isn't confused mid-stream.
+func TestMessages_StreamUpstreamError(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	s.mu.Lock()
+	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+		_, _ = w.Write([]byte(`{"error":"unavailable"}`))
+	}
+	s.mu.Unlock()
+	srv, _ := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	rec := doPOST(srv, "/v1/messages", body)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct == "text/event-stream" {
+		t.Errorf("Content-Type should not be SSE on upstream error: %q", ct)
+	}
+	if !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Errorf("body should be Anthropic-shaped error: %s", rec.Body.String())
+	}
+}
+
+// TestMessages_StreamUpstreamMalformed: upstream returns 200 + garbage during
+// a streaming request. Same expectation as above — JSON 502, not SSE.
+func TestMessages_StreamUpstreamMalformed(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	s.mu.Lock()
+	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`not-json`))
+	}
+	s.mu.Unlock()
+	srv, _ := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	rec := doPOST(srv, "/v1/messages", body)
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
 	}
 }
 

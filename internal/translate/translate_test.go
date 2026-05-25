@@ -458,3 +458,49 @@ func TestUsageMapping(t *testing.T) {
 		t.Errorf("usage mapping wrong: %+v", out.Usage)
 	}
 }
+
+// --- internal helper coverage ---
+
+func TestTrimJSON(t *testing.T) {
+	tests := map[string]struct {
+		in   string
+		want string
+	}{
+		"no whitespace":      {`"hi"`, `"hi"`},
+		"leading":            {`   "hi"`, `"hi"`},
+		"trailing":           {`"hi"   `, `"hi"`},
+		"both ends":          {" \n\"hi\"\t ", `"hi"`},
+		"pure whitespace":    {" \n\t ", ``},
+		"empty":              {``, ``},
+		"internal preserved": {`"a b"`, `"a b"`},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := string(trimJSON(json.RawMessage(tc.in)))
+			if got != tc.want {
+				t.Errorf("trimJSON(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFlattenAssistantContent_MixedParts(t *testing.T) {
+	// Upstreams shouldn't return image_url in assistant content for Stage 0,
+	// but if they do we keep the text parts and drop the rest rather than
+	// erroring — the alternative would silently corrupt a working response.
+	raw := json.RawMessage(`[{"type":"text","text":"hello "},{"type":"image_url","image_url":{"url":"x"}},{"type":"text","text":"world"}]`)
+	got, err := flattenAssistantContent(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "hello world" {
+		t.Errorf("got %q, want %q", got, "hello world")
+	}
+}
+
+func TestFlattenAssistantContent_UnrecognisedShape(t *testing.T) {
+	raw := json.RawMessage(`{"unexpected":"object"}`)
+	if _, err := flattenAssistantContent(raw); err == nil {
+		t.Error("expected error for object shape, got nil")
+	}
+}
