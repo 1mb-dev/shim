@@ -1007,3 +1007,40 @@ func TestNew_UnknownAdapter(t *testing.T) {
 		t.Fatal("expected error for unknown adapter")
 	}
 }
+
+// TestMessages_BackTranslationFailureNoRecord: upstream returns valid JSON
+// with non-zero Usage but empty choices[] → OpenAIToAnthropic rejects with
+// "no choices" → handler 500s → token_delta MUST NOT be credited (the
+// request never produced a client-visible 200). Fences the sequencing fix
+// from /code-review 2026-05-26 backlog MED-1.
+func TestMessages_BackTranslationFailureNoRecord(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	s.mu.Lock()
+	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"stub-1","model":"stub-model",
+			"choices":[],
+			"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+		}`))
+	}
+	s.mu.Unlock()
+	srv, _ := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	resp := doPOST(t, srv, "/v1/messages", body)
+	bodyOf(t, resp) // drain
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (back-translation failure)", resp.StatusCode)
+	}
+
+	metricsResp := doGET(t, srv, "/v1/metrics")
+	var snap measure.Snapshot
+	if err := json.Unmarshal([]byte(bodyOf(t, metricsResp)), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if entry, ok := snap.Tokens["/v1/messages"]; ok {
+		t.Errorf("token_delta should be empty after back-translation failure, got %+v", entry)
+	}
+}

@@ -111,6 +111,47 @@ func TestRecordTokenDelta(t *testing.T) {
 	}
 }
 
+// TestRecordTokenDelta_ZeroUsageNoop: an upstream response that omits
+// the usage block (both prompt + completion zero) must not register an
+// entry — otherwise the per-endpoint averages get diluted by a "0 vs 0"
+// observation that adds no signal.
+func TestRecordTokenDelta_ZeroUsageNoop(t *testing.T) {
+	c := New()
+	c.RecordTokenDelta("/v1/messages", 42, 0, 0)
+	s := c.Snapshot()
+	if _, ok := s.Tokens["/v1/messages"]; ok {
+		t.Errorf("zero-usage record should not create an endpoint entry, got %+v", s.Tokens["/v1/messages"])
+	}
+
+	// Sanity: a subsequent non-zero record still works.
+	c.RecordTokenDelta("/v1/messages", 10, 8, 5)
+	s = c.Snapshot()
+	stats, ok := s.Tokens["/v1/messages"]
+	if !ok {
+		t.Fatal("non-zero record did not create entry")
+	}
+	if stats.N != 1 || stats.ShimTotal != 10 {
+		t.Errorf("got %+v, want N=1 ShimTotal=10", stats)
+	}
+}
+
+// TestRecordTokenDelta_PartialUsageRecorded: if either prompt OR
+// completion is non-zero, record it. The guard fires only on the
+// "upstream omitted usage entirely" case.
+func TestRecordTokenDelta_PartialUsageRecorded(t *testing.T) {
+	c := New()
+	c.RecordTokenDelta("/v1/messages", 5, 3, 0)
+	c.RecordTokenDelta("/v1/messages", 5, 0, 7)
+	s := c.Snapshot()
+	stats, ok := s.Tokens["/v1/messages"]
+	if !ok {
+		t.Fatal("partial-usage record should create entry")
+	}
+	if stats.N != 2 {
+		t.Errorf("N = %d, want 2", stats.N)
+	}
+}
+
 // TestRecordRewriteEvent_ExactKeys: asserts the exact rewrite kinds shim
 // surfaces. Mutation-survival: rename either constant and this test fails
 // with a clear diagnostic on which name moved.

@@ -88,18 +88,21 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
-	s.measure.RecordTokenDelta("/v1/messages",
-		inputTokens(req),
-		openaiResp.Usage.PromptTokens,
-		openaiResp.Usage.CompletionTokens,
-	)
-
 	events, err := translate.ToAnthropicSSE(&openaiResp, req.Model)
 	if err != nil {
 		writeError(w, s.log, http.StatusInternalServerError, errAPI,
 			"build SSE: "+err.Error())
 		return
 	}
+
+	// Record AFTER SSE build succeeds so a failed translate doesn't credit
+	// shim_total for a request that never produced a streamable event.
+	// Collector additionally no-ops on zero Usage (some upstreams omit it).
+	s.measure.RecordTokenDelta("/v1/messages",
+		inputTokens(req),
+		openaiResp.Usage.PromptTokens,
+		openaiResp.Usage.CompletionTokens,
+	)
 
 	if err := writeSSE(w, events); err != nil {
 		// Connection already in SSE mode; can only log.

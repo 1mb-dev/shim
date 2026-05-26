@@ -218,18 +218,21 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.measure.RecordTokenDelta("/v1/messages",
-		inputTokens(&req),
-		openaiResp.Usage.PromptTokens,
-		openaiResp.Usage.CompletionTokens,
-	)
-
 	anthropicResp, err := translate.OpenAIToAnthropic(&openaiResp, req.Model)
 	if err != nil {
 		writeError(w, s.log, http.StatusInternalServerError, errAPI,
 			"translation back: "+err.Error())
 		return
 	}
+
+	// Record AFTER back-translation succeeds so a failed translate doesn't
+	// credit shim_total for a request the client never saw a 200 for.
+	// Collector additionally no-ops on zero Usage (some upstreams omit it).
+	s.measure.RecordTokenDelta("/v1/messages",
+		inputTokens(&req),
+		openaiResp.Usage.PromptTokens,
+		openaiResp.Usage.CompletionTokens,
+	)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(anthropicResp); err != nil {

@@ -71,7 +71,14 @@ func (c *Collector) RecordLatency(endpoint string, d time.Duration) {
 // endpoint. shimCount is the cl100k_base BPE count from tokens.Count;
 // upstreamPrompt and upstreamCompletion are the upstream usage fields.
 // Totals + count surface the delta at Snapshot time.
+//
+// No-op when BOTH upstreamPrompt and upstreamCompletion are zero —
+// upstream omitted the usage block, recording zeros would dilute the
+// shim/upstream comparison without adding signal. README discloses this.
 func (c *Collector) RecordTokenDelta(endpoint string, shimCount, upstreamPrompt, upstreamCompletion int) {
+	if upstreamPrompt == 0 && upstreamCompletion == 0 {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	t := c.tokens[endpoint]
