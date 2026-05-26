@@ -1,6 +1,6 @@
 # shim — project conventions
 
-Go-native HTTP proxy translating Anthropic Messages API ↔ OpenAI ChatCompletions. Single static binary, zero runtime deps. Stage 0 ships one adapter (DeepSeek). Repo `github.com/1mb-dev/shim`; currently PRIVATE.
+Go-native HTTP proxy translating Anthropic Messages API ↔ OpenAI ChatCompletions. Single static binary, zero runtime deps. Stage 0 + 1 + 1.5 + 1.5b shipped; one adapter (DeepSeek) with prefix-aware claude-* mapping per the official guide. Repo `github.com/1mb-dev/shim`; currently PRIVATE.
 
 ## Tech stack
 - Go 1.22 (see `go.mod`)
@@ -26,15 +26,20 @@ Go-native HTTP proxy translating Anthropic Messages API ↔ OpenAI ChatCompletio
 - `[ASSUMPTION]` markers in code or todos signal Stage 0 default choices needing Stage 1 confirmation (see `internal/translate/translate.go:20-22` for the canonical example).
 - Errors at the server boundary fail loudly with an Anthropic-shaped JSON response — see `internal/server/errors.go`.
 - All logging goes through the redacting slog handler (`internal/obslog/`). Do not bypass it. Sensitive keys + URL query strings + nested attrs are scrubbed before emission.
-- Handler tests use the in-process stub-adapter pattern (`internal/server/handlers_test.go`), not network calls.
+- Handler tests drive a real `httptest.NewServer(srv.http.Handler)` via the `doPOST`/`doGET` helpers, exercising mux routing + `MaxBytesReader` + timeouts. Failure-injection tests (encode-failure, SSE write-failure) use direct handler invocation with custom `ResponseWriter` types because they need to inject errors stdlib won't.
+- Adapters implement the contract in `internal/adapter/adapter.go`: `Name`, `DefaultModel`, `MapModel`, `Validate`, `BuildRequest`, `NormalizeResponse`. Validate runs once at startup (`server.New`); misconfiguration blocks startup rather than failing per-request.
+- Measurements (`internal/measure/`) are collected in-memory and exposed via `GET /v1/metrics`. Per-handler `defer func() { s.measure.RecordLatency(...) }()` (closure-wrapped — naïve form evaluates `time.Since` at defer-statement time). `RecordRewriteEvent` fires from `logModelRewrite` and `stop_sequences` truncation.
 - Default bind is `127.0.0.1:8082` — explicit loopback. Never bind `:8082` (all interfaces) without an authenticating reverse proxy in front.
-- DeepSeek's tuned HTTP client lives in the adapter package, exposed via `clientProvider` optional interface in `internal/server/server.go` — Stage 1 may collapse this when a second adapter forces a cleaner shape.
+- DeepSeek's tuned HTTP client lives in the adapter package, exposed via `clientProvider` optional interface in `internal/server/server.go` — Stage 2 either collapses this or keeps it; decision deferred until adapter #2 forces the shape.
 
 ## Source-of-truth docs (gitignored, local)
 - `todos/handoff-2026-05-25-shim-stage0.md` — full Stage 0 handoff context
-- `todos/shim-stage0-plan.md` — 14-step Stage 0 implementation plan
-- `todos/shim-stage0-notes.md` — plan deviation log
-- `todos/project-review-2026-05-26.md` — comprehensive review feeding the Stage 1 huddle
+- `todos/shim-stage{0,1,1.5}-plan.md` — per-stage implementation plans
+- `todos/shim-stage{0,1,1.5}-notes.md` — per-stage deviation logs
+- `todos/project-review-2026-05-26.md` — Stage 1 entry review (4-persona)
+- `todos/stage{1,2}-huddle-2026-05-26.md` — strategic decision artifacts (Linus/Maya/Kai)
+- `todos/backlog.md` — deferred items surfaced during reviews, picked up opportunistically
+- `todos/pause-notes.md` — latest session pause context
 
 ## External Action Gate
 Pushes, PRs, comments, releases — anything externally visible — require explicit user approval in a fresh user message. The repo is currently PRIVATE; flipping public is itself an external action. Per global `~/.claude/CLAUDE.md`.
