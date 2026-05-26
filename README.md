@@ -5,11 +5,13 @@ model provider. Set `ANTHROPIC_BASE_URL` to point at shim, and Claude Code's
 Messages-API requests get translated into OpenAI ChatCompletions and routed
 to your configured upstream. Stage 0/1 ships one adapter: DeepSeek.
 
-Single static binary. Zero runtime dependencies. Stdlib-leaning.
+Single static binary. Stdlib-leaning, with one runtime dependency:
+`pkoukk/tiktoken-go` (cl100k_base BPE tables, embedded at compile time —
+no network fetch at startup). See [Dependencies](#dependencies).
 
-**Status: Stage 1 shipped, Stage 1.5 in progress.** What's listed under
-"What works" is what's wired. Anything in "What doesn't" returns a clear
-error rather than silently misbehaving.
+**Status: Stage 1, 1.5, 2 shipped.** What's listed under "What works" is
+what's wired. Anything in "What doesn't" returns a clear error rather
+than silently misbehaving.
 
 ## When NOT to use shim
 
@@ -29,7 +31,7 @@ No proxy needed.
 ## When shim adds value
 
 - **Honest measurement.** `GET /v1/metrics` surfaces per-endpoint latency
-  (p50/p95/p99), the gap between shim's token approximation and the
+  (p50/p95/p99), the gap between shim's cl100k_base BPE count and the
   upstream's claimed count, and a running tally of every request shim
   rewrote in flight. See [Measurement](#measurement).
 - **Loud-fail visibility on heuristic drift.** When shim modifies your
@@ -46,7 +48,7 @@ No proxy needed.
 ## What works
 
 - `POST /v1/messages` — Anthropic Messages API. Non-streaming AND streaming (`{"stream": true}` returns the canonical Anthropic SSE event sequence: `message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` → `message_delta` → `message_stop`).
-- `POST /v1/messages/count_tokens` — approximate token count (see [Measurement](#measurement)).
+- `POST /v1/messages/count_tokens` — cl100k_base BPE count (see [Measurement](#measurement)).
 - `GET /v1/metrics` — per-endpoint latency p50/p95/p99, shim-vs-upstream token-delta totals, rewrite-event counts. See [Measurement](#measurement).
 - `GET /health` — `{"status":"ok"}`.
 - Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences` (capped at 4 per OpenAI's limit; over-cap requests are truncated and a `warn` log line emitted), `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
@@ -84,6 +86,19 @@ make build-all          # → dist/shim-darwin-arm64, dist/shim-linux-{amd64,arm
 ```
 
 Requires Go 1.22+.
+
+## Dependencies
+
+Runtime (compile-time embedded; no network fetch at startup, no
+toolchain required at runtime):
+
+- [`github.com/pkoukk/tiktoken-go`](https://github.com/pkoukk/tiktoken-go) — BPE tokenizer for cl100k_base counting on `/v1/messages/count_tokens` and `/v1/metrics` `token_delta.shim_total`.
+- [`github.com/pkoukk/tiktoken-go-loader`](https://github.com/pkoukk/tiktoken-go-loader) — embeds BPE tables (cl100k + o200k + p50k + r50k) via `go:embed`. shim only uses cl100k; the other three add ~5MB of dead weight to the binary.
+
+Binary footprint as of Stage 2: ~13 MB per platform (darwin-arm64 /
+linux-arm64; linux-amd64 ~14 MB). Stage 0/1 binaries were ~6.5 MB; the
+tokenizer adds ~6.5 MB. The binary is still single-file static — bigger
+file, same drop-in story.
 
 ## Config
 
@@ -165,7 +180,7 @@ The launcher prints a single breadcrumb line to stderr (`shim run → claude=/pa
 
 `GET /v1/metrics` returns a JSON snapshot of what shim has done since
 startup. Per-endpoint latency (p50/p95/p99 from a 1024-sample reservoir),
-the gap between shim's token approximation and the upstream's claimed
+the gap between shim's cl100k_base BPE count and the upstream's claimed
 count, and how often shim rewrites requests in flight.
 
 ```sh
@@ -205,11 +220,14 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
 - `latency.<path>.{p50,p95,p99}` — milliseconds, from the per-endpoint
   reservoir. `n` is total observations since startup (the reservoir caps at
   1024 samples for percentile compute; `n` keeps counting past that).
-- `token_delta.<path>.shim_total` is shim's `chars/4` approximation of every
+- `token_delta.<path>.shim_total` is shim's cl100k_base BPE count of every
   prompt's input. `upstream_prompt_total` is what the upstream reported back
-  in `usage.prompt_tokens`. The gap is the drift — wide gap means the
-  heuristic is off for your traffic shape and a real tokenizer would change
-  the bill estimate.
+  in `usage.prompt_tokens`. The gap is the drift — under cl100k the
+  shim-side number is reproducible; the upstream may use a different
+  tokenizer (DeepSeek's is not published), so a wide gap means the two
+  tokenizers disagree on this traffic shape, not that one is wrong. If the
+  upstream omits the `usage` block, shim skips the observation rather than
+  recording zeros.
 - `rewrites.model` counts how often shim replaced the requested model name
   (Stage 0's DeepSeek adapter rewrites every request, so this matches
   `/v1/messages` `n`). `rewrites.stop_sequences` counts over-cap truncations.
@@ -219,18 +237,21 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
 is committed for Stage 1 but unstable until v0.1.0; breaking changes will
 land in `CHANGELOG.md`.
 
-### Token approximation
+### Token counting
 
 The `count_tokens` endpoint and the `token_delta.shim_total` field above
-use an **approximation** — `len(text) / 4` per the OpenAI tokenizer
-guidance. This is sufficient for in-session sanity checks but is **not** a
-substitute for a real tokenizer when calculating bills. An exact tokenizer
-is planned at the measurement-stage boundary; the specific library is not
-yet chosen.
+use **cl100k_base** — OpenAI's GPT-3.5/GPT-4 BPE tokenizer, loaded via
+`pkoukk/tiktoken-go` with offline-embedded tables. Under cl100k the count
+is exact and reproducible.
+
+DeepSeek (and most non-OpenAI upstreams) don't publish their tokenizer,
+so cl100k is an **approximation across tokenizers** — close enough for
+in-session sanity checks and `/v1/metrics` drift signal, **not** a
+substitute for the upstream's own count when reconciling a bill.
 
 Response usage shape (Anthropic Messages contract) — these values come
 straight from the upstream's `usage.prompt_tokens` and
-`usage.completion_tokens`, not from shim's approximation:
+`usage.completion_tokens`, not from shim's cl100k count:
 
 ```json
 {
@@ -251,7 +272,7 @@ internal/
   adapter/            # interface + registry
     deepseek/         # Stage 0 adapter
   translate/          # Anthropic ↔ OpenAI
-  tokens/             # approximation
+  tokens/             # cl100k_base BPE counter
   measure/            # /v1/metrics collector (latency, token delta, rewrites)
   launcher/           # shim run
   server/             # HTTP server + handlers + error taxonomy

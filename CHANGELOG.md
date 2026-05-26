@@ -3,6 +3,39 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] — Stage 2 (2026-05-26)
+
+Real tokenizer replaces the Stage 0 `chars/4` approximation; structural
+debt deferred from Stage 1 paid before adapter #2 (Stage 3) lands on it.
+Four `/code-review` MED items folded in.
+
+### Added
+- `internal/tokens.Count` and `tokens.Init` — cl100k_base BPE tokenizer via `pkoukk/tiktoken-go` with the offline loader from `pkoukk/tiktoken-go-loader`. `tokens.Init` runs from `server.New` so a broken embed blocks startup rather than panicking on first request.
+- Tuned upstream `*http.Client` on the server: `MaxIdleConnsPerHost=10`, `ForceAttemptHTTP2=true`, explicit `tls.Config{MinVersion: TLS12}`, split timeouts unchanged from Stage 0.
+- `deepseek.New(opts) (adapter.Adapter, error)` constructor — returns a fresh per-instance adapter; caller registers via `adapter.Register`.
+
+### Changed
+- `/v1/messages/count_tokens` and `/v1/metrics` `token_delta.shim_total` now report cl100k_base counts. Under cl100k the number is exact and reproducible; vs. DeepSeek's actual (unpublished) tokenizer it remains an approximation — `/v1/metrics` is still a drift signal, not a billing-grade count. README documents the caveat.
+- `RecordTokenDelta` call sites moved to after-success in both `handlers.go` and `stream.go`; failed back-translation or SSE build no longer credits `shim_total` for a request the client never saw a 200 for.
+- `RecordTokenDelta` no-ops when both `Usage.PromptTokens` and `Usage.CompletionTokens` are zero — upstream omitted the block; recording 0/0 dilutes averages without signal.
+
+### Removed
+- `internal/tokens.Approximate` — no remaining callers post-cl100k.
+- `clientProvider` optional interface from `internal/server/server.go` and the `deepseek.(*impl).Client()` method that paired with it. One tuned HTTP client now lives on `Server`; per-adapter clients revisitable when Stage 3's adapter #2 forces the question.
+- `Adapter.DefaultModel() string` from the `internal/adapter.Adapter` interface — vestigial post-prefix-mapping; `MapModel("")` already encoded the "caller sent no model, pick one" path inside each adapter.
+- `deepseek.Configure(opts)` + the package-level `instance` singleton + `init()` registration. Use `deepseek.New(opts)` + `adapter.Register(a)` explicitly from `cmd/shim/main.go`.
+
+### Binary size
+~6.5 MB increase from cl100k BPE tables (offline loader embeds all four encodings; shim only uses cl100k, but the others go along for the ride). darwin-arm64 / linux-arm64: 6.5 MB → ~13 MB. linux-amd64: 7.0 MB → ~14 MB. Still single-file static — T3 (drop-in binary) preserved.
+
+### Runtime dependencies
+First runtime deps in shim's history. Both fetched at `go build` and embedded; no network fetch or external tooling at startup:
+
+- `github.com/pkoukk/tiktoken-go` v0.1.8
+- `github.com/pkoukk/tiktoken-go-loader` v0.0.2
+
+Transitive: `dlclark/regexp2`, `google/uuid` (compile-time, via tiktoken-go).
+
 ## [Unreleased] — Stage 1.5 (2026-05-26)
 
 Parity pass against [DeepSeek's official Claude Code integration guide](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code) — DeepSeek now exposes a native Anthropic Messages API at `api.deepseek.com/anthropic`, with server-side claude-prefix model mapping. shim mirrors that mapping rule and clarifies when shim adds value vs. when to use the native endpoint directly.
