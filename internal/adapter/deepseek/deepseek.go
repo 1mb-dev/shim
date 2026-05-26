@@ -25,8 +25,17 @@ const (
 	Name = "deepseek"
 	// DefaultBaseURL is used when config leaves UpstreamBaseURL empty.
 	DefaultBaseURL = "https://api.deepseek.com/v1"
-	// DefaultModel is used when MapModel has no override.
+	// DefaultModel is the legacy fallback used when the caller sends an
+	// empty model name and no UPSTREAM_MODEL is configured.
 	DefaultModel = "deepseek-chat"
+	// DefaultOpusModel maps claude-opus* requests per DeepSeek's official
+	// Claude Code integration guide
+	// (https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code).
+	DefaultOpusModel = "deepseek-v4-pro[1m]"
+	// DefaultSonnetModel maps claude-sonnet* requests per the same guide.
+	DefaultSonnetModel = "deepseek-v4-flash"
+	// DefaultHaikuModel maps claude-haiku* requests per the same guide.
+	DefaultHaikuModel = "deepseek-v4-flash"
 )
 
 // instance is the singleton registered at init(). State is filled in by
@@ -37,19 +46,37 @@ var instance = &impl{client: newClient()}
 type impl struct {
 	baseURL       string
 	apiKey        string
-	modelOverride string // "" means use DefaultModel
+	modelOverride string // catch-all UPSTREAM_MODEL; empty = use per-role defaults / pass-through
+	opusModel     string // UPSTREAM_OPUS_MODEL; empty = DefaultOpusModel
+	sonnetModel   string // UPSTREAM_SONNET_MODEL; empty = DefaultSonnetModel
+	haikuModel    string // UPSTREAM_HAIKU_MODEL; empty = DefaultHaikuModel
 	client        *http.Client
+}
+
+// ConfigureOpts holds Configure parameters as a struct so signature changes
+// don't ripple to every call site.
+type ConfigureOpts struct {
+	BaseURL       string
+	APIKey        string
+	ModelOverride string
+	OpusModel     string
+	SonnetModel   string
+	HaikuModel    string
 }
 
 // Configure injects runtime configuration into the registered adapter. Call
 // exactly once before starting the server.
-func Configure(baseURL, apiKey, modelOverride string) {
+func Configure(opts ConfigureOpts) {
+	baseURL := opts.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
 	instance.baseURL = strings.TrimRight(baseURL, "/")
-	instance.apiKey = apiKey
-	instance.modelOverride = modelOverride
+	instance.apiKey = opts.APIKey
+	instance.modelOverride = opts.ModelOverride
+	instance.opusModel = opts.OpusModel
+	instance.sonnetModel = opts.SonnetModel
+	instance.haikuModel = opts.HaikuModel
 }
 
 func (a *impl) Name() string { return Name }
@@ -61,11 +88,52 @@ func (a *impl) DefaultModel() string {
 	return DefaultModel
 }
 
-// MapModel collapses any Anthropic-style model name to the DeepSeek default
-// (or the configured override). The proxy is not a model router — clients
-// pick the adapter; the adapter picks the model.
-func (a *impl) MapModel(_ string) string {
-	return a.DefaultModel()
+// MapModel routes an Anthropic-style model name to the DeepSeek upstream
+// model. Mapping rule mirrors DeepSeek's own server-side rule on its native
+// Anthropic endpoint (per the official Claude Code integration guide):
+//
+//   - claude-opus*   → DefaultOpusModel  (or UPSTREAM_OPUS_MODEL)
+//   - claude-sonnet* → DefaultSonnetModel  (or UPSTREAM_SONNET_MODEL)
+//   - claude-haiku*  → DefaultHaikuModel  (or UPSTREAM_HAIKU_MODEL)
+//   - empty string   → UPSTREAM_MODEL if set, else DefaultModel
+//   - anything else  → UPSTREAM_MODEL if set, else pass through unchanged
+//
+// Note: Legacy names like `claude-3-5-sonnet-20240620` do NOT match the
+// prefix rule and fall to the pass-through branch — same as DeepSeek's own
+// native endpoint would do. Users on legacy names should set UPSTREAM_MODEL
+// or update to current model identifiers.
+//
+// Whenever MapModel returns a value different from the input, the server
+// logs a "model rewritten" line and increments the rewrites.model counter
+// in /v1/metrics (thesis-2: never silently forward modified traffic).
+func (a *impl) MapModel(model string) string {
+	switch {
+	case strings.HasPrefix(model, "claude-opus"):
+		if a.opusModel != "" {
+			return a.opusModel
+		}
+		return DefaultOpusModel
+	case strings.HasPrefix(model, "claude-sonnet"):
+		if a.sonnetModel != "" {
+			return a.sonnetModel
+		}
+		return DefaultSonnetModel
+	case strings.HasPrefix(model, "claude-haiku"):
+		if a.haikuModel != "" {
+			return a.haikuModel
+		}
+		return DefaultHaikuModel
+	case model == "":
+		if a.modelOverride != "" {
+			return a.modelOverride
+		}
+		return DefaultModel
+	default:
+		if a.modelOverride != "" {
+			return a.modelOverride
+		}
+		return model
+	}
 }
 
 // Validate confirms the adapter has the configuration it needs to serve

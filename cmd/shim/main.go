@@ -65,7 +65,14 @@ func runServer() error {
 	}
 
 	log := setupLogger(cfg)
-	deepseek.Configure(cfg.UpstreamBaseURL, cfg.UpstreamAPIKey, cfg.UpstreamModel)
+	deepseek.Configure(deepseek.ConfigureOpts{
+		BaseURL:       cfg.UpstreamBaseURL,
+		APIKey:        cfg.UpstreamAPIKey,
+		ModelOverride: cfg.UpstreamModel,
+		OpusModel:     cfg.UpstreamOpusModel,
+		SonnetModel:   cfg.UpstreamSonnetModel,
+		HaikuModel:    cfg.UpstreamHaikuModel,
+	})
 
 	srv, err := server.New(cfg, log)
 	if err != nil {

@@ -22,6 +22,21 @@ func testAdapter(baseURL, apiKey string) *impl {
 	}
 }
 
+// testAdapterRoles is testAdapter with the per-role model overrides also
+// settable. Empty values fall back to DefaultOpusModel / DefaultSonnetModel /
+// DefaultHaikuModel.
+func testAdapterRoles(baseURL, apiKey, modelOverride, opus, sonnet, haiku string) *impl {
+	return &impl{
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		apiKey:        apiKey,
+		modelOverride: modelOverride,
+		opusModel:     opus,
+		sonnetModel:   sonnet,
+		haikuModel:    haiku,
+		client:        newClient(),
+	}
+}
+
 func TestNameAndDefaultModel(t *testing.T) {
 	a := testAdapter("https://api.deepseek.com/v1", "k")
 	if a.Name() != "deepseek" {
@@ -37,13 +52,59 @@ func TestNameAndDefaultModel(t *testing.T) {
 }
 
 func TestMapModel(t *testing.T) {
-	a := testAdapter("x", "y")
-	// Anthropic name → DeepSeek default; we don't route by claude-* prefix.
-	if got := a.MapModel("claude-3-5-sonnet-20240620"); got != "deepseek-chat" {
-		t.Errorf("MapModel(claude-...) = %q", got)
+	// Table covers the full prefix matrix from the DeepSeek official guide:
+	//   claude-opus*   → opus model (default or override)
+	//   claude-sonnet* → sonnet model
+	//   claude-haiku*  → haiku model
+	// Plus the fallback branches: empty input, non-claude name, legacy
+	// claude-3-* (no prefix match, falls through to pass-through/override).
+	tests := []struct {
+		name          string
+		modelOverride string // UPSTREAM_MODEL
+		opus          string
+		sonnet        string
+		haiku         string
+		input         string
+		want          string
+	}{
+		// Per-role defaults
+		{"opus default", "", "", "", "", "claude-opus-4-7", DefaultOpusModel},
+		{"opus default exact", "", "", "", "", "claude-opus", DefaultOpusModel},
+		{"opus default with [1m] suffix", "", "", "", "", "claude-opus-4-7[1m]", DefaultOpusModel},
+		{"sonnet default", "", "", "", "", "claude-sonnet-4-6", DefaultSonnetModel},
+		{"sonnet default exact", "", "", "", "", "claude-sonnet", DefaultSonnetModel},
+		{"haiku default", "", "", "", "", "claude-haiku-4-5", DefaultHaikuModel},
+		{"haiku default exact", "", "", "", "", "claude-haiku", DefaultHaikuModel},
+
+		// Per-role overrides
+		{"opus override", "", "my-opus", "", "", "claude-opus", "my-opus"},
+		{"sonnet override", "", "", "my-sonnet", "", "claude-sonnet", "my-sonnet"},
+		{"haiku override", "", "", "", "my-haiku", "claude-haiku", "my-haiku"},
+
+		// Override independence — only opus set should not affect sonnet/haiku
+		{"only opus override leaves sonnet default", "", "my-opus", "", "", "claude-sonnet-4-6", DefaultSonnetModel},
+		{"only opus override leaves haiku default", "", "my-opus", "", "", "claude-haiku-4-5", DefaultHaikuModel},
+
+		// Empty input falls back to modelOverride or DefaultModel
+		{"empty input no override", "", "", "", "", "", DefaultModel},
+		{"empty input with override", "deepseek-reasoner", "", "", "", "", "deepseek-reasoner"},
+
+		// Non-claude-{opus,sonnet,haiku} inputs
+		{"deepseek-v4-pro pass-through", "", "", "", "", "deepseek-v4-pro", "deepseek-v4-pro"},
+		{"deepseek-v4-pro with UPSTREAM_MODEL override", "deepseek-reasoner", "", "", "", "deepseek-v4-pro", "deepseek-reasoner"},
+		{"unknown name pass-through", "", "", "", "", "unknown-model-name", "unknown-model-name"},
+
+		// Legacy claude-3-* — does NOT match prefix rule, treated as non-claude
+		{"legacy claude-3-5-sonnet pass-through", "", "", "", "", "claude-3-5-sonnet-20240620", "claude-3-5-sonnet-20240620"},
+		{"legacy claude-3-5-sonnet with UPSTREAM_MODEL", "deepseek-chat", "", "", "", "claude-3-5-sonnet-20240620", "deepseek-chat"},
 	}
-	if got := a.MapModel("anything"); got != "deepseek-chat" {
-		t.Errorf("MapModel(anything) = %q", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAdapterRoles("x", "y", tc.modelOverride, tc.opus, tc.sonnet, tc.haiku)
+			if got := a.MapModel(tc.input); got != tc.want {
+				t.Errorf("MapModel(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -249,16 +310,32 @@ func TestConfigure(t *testing.T) {
 	saved := *instance
 	defer func() { *instance = saved }()
 
-	Configure("", "sk-cfg", "")
+	Configure(ConfigureOpts{APIKey: "sk-cfg"})
 	if instance.baseURL != DefaultBaseURL {
 		t.Errorf("empty baseURL should default, got %q", instance.baseURL)
 	}
-	Configure("https://x/v1/", "sk-cfg", "deepseek-reasoner")
+	Configure(ConfigureOpts{
+		BaseURL:       "https://x/v1/",
+		APIKey:        "sk-cfg",
+		ModelOverride: "deepseek-reasoner",
+		OpusModel:     "custom-opus",
+		SonnetModel:   "custom-sonnet",
+		HaikuModel:    "custom-haiku",
+	})
 	if instance.baseURL != "https://x/v1" {
 		t.Errorf("trailing slash not trimmed: %q", instance.baseURL)
 	}
 	if instance.DefaultModel() != "deepseek-reasoner" {
 		t.Errorf("override lost: %q", instance.DefaultModel())
+	}
+	if instance.opusModel != "custom-opus" {
+		t.Errorf("opusModel = %q, want custom-opus", instance.opusModel)
+	}
+	if instance.sonnetModel != "custom-sonnet" {
+		t.Errorf("sonnetModel = %q, want custom-sonnet", instance.sonnetModel)
+	}
+	if instance.haikuModel != "custom-haiku" {
+		t.Errorf("haikuModel = %q, want custom-haiku", instance.haikuModel)
 	}
 }
 
