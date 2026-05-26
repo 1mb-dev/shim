@@ -89,7 +89,7 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 	}
 
 	s.measure.RecordTokenDelta("/v1/messages",
-		approxInputTokens(req),
+		inputTokens(req),
 		openaiResp.Usage.PromptTokens,
 		openaiResp.Usage.CompletionTokens,
 	)

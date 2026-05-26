@@ -61,17 +61,22 @@ func (s *Server) logModelRewrite(requested, resolved string) {
 	s.measure.RecordRewriteEvent(measure.RewriteModel)
 }
 
-// approxInputTokens returns shim's chars/4 approximation of the request's
+// inputTokens returns the cl100k_base BPE token count for the request's
 // input prompt — extracts text from system + message content blocks, then
-// applies the chars/4 heuristic. Used by /v1/messages/count_tokens and the
-// measurement collector (delta vs. upstream prompt_tokens).
+// runs tokens.Count. Used by /v1/messages/count_tokens and the measurement
+// collector (delta vs. upstream prompt_tokens).
 //
-// Naive stringification of json.RawMessage would count brackets/quotes/keys
-// as if they were prompt characters, structurally inflating shim_total by
-// ~10× for content-block requests. extractText unmarshals the actual text
-// fields. Tool-call argument JSON is currently NOT counted (avoiding the
-// same syntax-byte problem); known under-count for tool-heavy requests.
-func approxInputTokens(req *translate.AnthropicRequest) int {
+// cl100k is OpenAI's GPT-4 tokenizer; the upstream may use a different
+// scheme (DeepSeek's tokenizer is not published). The result is therefore
+// "approximate to the upstream" but exact under cl100k. README's
+// Measurement section discloses this.
+//
+// Naive stringification of json.RawMessage would feed brackets/quotes/keys
+// to the tokenizer as if they were prompt characters, structurally
+// inflating shim_total. extractText unmarshals the actual text fields.
+// Tool-call argument JSON is currently NOT counted; known under-count for
+// tool-heavy requests.
+func inputTokens(req *translate.AnthropicRequest) int {
 	var sb strings.Builder
 	if s, ok := extractText(req.System); ok {
 		sb.WriteString(s)
@@ -84,7 +89,7 @@ func approxInputTokens(req *translate.AnthropicRequest) int {
 			sb.WriteString(s)
 		}
 	}
-	return tokens.Approximate(sb.String())
+	return tokens.Count(sb.String())
 }
 
 // extractText pulls prompt text out of a json.RawMessage that may be a
@@ -214,7 +219,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.measure.RecordTokenDelta("/v1/messages",
-		approxInputTokens(&req),
+		inputTokens(&req),
 		openaiResp.Usage.PromptTokens,
 		openaiResp.Usage.CompletionTokens,
 	)
@@ -234,8 +239,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCountTokens — POST /v1/messages/count_tokens → {"input_tokens": N}.
-// Stage 0 uses chars/4 approximation; the README discloses this adjacent
-// to the usage.*_tokens docs.
+// N is the cl100k_base BPE count; see inputTokens for the cross-tokenizer
+// caveat (DeepSeek's actual tokenizer is not published).
 func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer func() { s.measure.RecordLatency("/v1/messages/count_tokens", time.Since(start)) }()
@@ -252,7 +257,7 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	n := approxInputTokens(&req)
+	n := inputTokens(&req)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]int{"input_tokens": n}); err != nil {
 		s.log.Error("response encode failed", slog.String("path", "/v1/messages/count_tokens"), slog.String("error", err.Error()))

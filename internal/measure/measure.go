@@ -4,7 +4,7 @@
 //
 // Stage 1 measurements (Fork 2-a, 3-a in todos/shim-stage1-plan.md):
 //   - Per-endpoint latency reservoir (fixed-size, percentile-at-read).
-//   - Per-endpoint token-delta totals (shim chars/4 vs upstream usage.*_tokens).
+//   - Per-endpoint token-delta totals (shim cl100k_base count vs upstream usage.*_tokens).
 //   - Rewrite-event counts (model rewrites, stop_sequences truncations, ...).
 //
 // All state is in-memory; restart resets to zero. Persistence is a Stage 2
@@ -67,11 +67,11 @@ func (c *Collector) RecordLatency(endpoint string, d time.Duration) {
 	r.record(ms, c.rng)
 }
 
-// RecordTokenDelta adds one (shim-approximation, upstream-claimed) pair for
-// endpoint. shimApprox is the chars/4 count; upstreamPrompt and
-// upstreamCompletion are the upstream usage fields. Totals + count surface
-// the delta at Snapshot time.
-func (c *Collector) RecordTokenDelta(endpoint string, shimApprox, upstreamPrompt, upstreamCompletion int) {
+// RecordTokenDelta adds one (shim-count, upstream-claimed) pair for
+// endpoint. shimCount is the cl100k_base BPE count from tokens.Count;
+// upstreamPrompt and upstreamCompletion are the upstream usage fields.
+// Totals + count surface the delta at Snapshot time.
+func (c *Collector) RecordTokenDelta(endpoint string, shimCount, upstreamPrompt, upstreamCompletion int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	t := c.tokens[endpoint]
@@ -79,7 +79,7 @@ func (c *Collector) RecordTokenDelta(endpoint string, shimApprox, upstreamPrompt
 		t = &tokenAggregate{}
 		c.tokens[endpoint] = t
 	}
-	t.shimTotal += shimApprox
+	t.shimTotal += shimCount
 	t.upstreamPromptTotal += upstreamPrompt
 	t.upstreamCompletionTotal += upstreamCompletion
 	t.n++
@@ -146,8 +146,8 @@ type LatencyStats struct {
 }
 
 // TokenStats reports cumulative sums. The delta is shim_total vs.
-// upstream_prompt_total — a wide gap signals the chars/4 approximation is
-// off for the traffic shape (Stage 2 tokenizer call).
+// upstream_prompt_total — a wide gap signals the cl100k count diverges
+// meaningfully from the upstream's actual tokenizer for the traffic shape.
 type TokenStats struct {
 	ShimTotal               int `json:"shim_total"`
 	UpstreamPromptTotal     int `json:"upstream_prompt_total"`

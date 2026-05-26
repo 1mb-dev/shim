@@ -581,22 +581,22 @@ func TestMessages_EmptyModelLogsRewrite(t *testing.T) {
 	}
 }
 
-// TestApproxInputTokens_ExtractsText: shim's chars/4 approximation must
-// count actual prompt text, not the JSON syntax bytes of json.RawMessage.
-// Closes the structural-inflation finding from /code-review 2026-05-26.
-func TestApproxInputTokens_ExtractsText(t *testing.T) {
+// TestInputTokens_ExtractsText: the token counter must see only actual
+// prompt text, not the JSON syntax bytes of json.RawMessage. Closes the
+// structural-inflation finding from /code-review 2026-05-26.
+func TestInputTokens_ExtractsText(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
-		// Approximation must NOT match the JSON-bytes-counted value (which
-		// would be ~7+ tokens for a 2-char prompt). We assert an upper
-		// bound that catches the JSON-byte-counting regression.
+		// Upper-bound check that catches the JSON-byte-counting regression
+		// (which would feed brackets/keys/quotes into the tokenizer and
+		// produce a count much higher than the text-only count).
 		maxTokens int
 	}{
 		{
 			name:      "string content 'hi'",
 			body:      `{"model":"x","messages":[{"role":"user","content":"hi"}]}`,
-			maxTokens: 1, // 'hi' = 2 chars → chars/4 → 1
+			maxTokens: 1, // cl100k: "hi" → 1
 		},
 		{
 			name:      "block-array content 'hi'",
@@ -606,7 +606,7 @@ func TestApproxInputTokens_ExtractsText(t *testing.T) {
 		{
 			name:      "system block + user 'hi'",
 			body:      `{"model":"x","system":"You are helpful.","messages":[{"role":"user","content":"hi"}]}`,
-			maxTokens: 5, // 'You are helpful. hi' = 19 chars → 4
+			maxTokens: 5, // cl100k: "You are helpful. hi" → 5
 		},
 		{
 			name:      "explicit null system + 'hi'",
@@ -714,9 +714,9 @@ func TestCountTokens_Malformed(t *testing.T) {
 	}
 }
 
-// TestCountTokens_WithSystem: covers approxInputTokens' system-populated
-// branch (only exercised via /v1/messages otherwise). Joint test for
-// approxInputTokens + handleCountTokens with system block present.
+// TestCountTokens_WithSystem: covers inputTokens' system-populated branch
+// (only exercised via /v1/messages otherwise). Joint test for inputTokens
+// + handleCountTokens with system block present.
 func TestCountTokens_WithSystem(t *testing.T) {
 	s := newStub()
 	defer s.close()

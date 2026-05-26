@@ -13,6 +13,7 @@ import (
 	"github.com/1mb-dev/shim/internal/adapter"
 	"github.com/1mb-dev/shim/internal/config"
 	"github.com/1mb-dev/shim/internal/measure"
+	"github.com/1mb-dev/shim/internal/tokens"
 )
 
 // clientProvider is the optional-interface extension adapters use to supply
@@ -45,6 +46,12 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 
 	if err := a.Validate(); err != nil {
 		return nil, fmt.Errorf("adapter %q validation failed: %w", cfg.Adapter, err)
+	}
+
+	// Load cl100k_base BPE up front so a corrupt embed blocks startup
+	// rather than panicking on first /v1/messages or /v1/metrics read.
+	if err := tokens.Init(); err != nil {
+		return nil, fmt.Errorf("tokens init: %w", err)
 	}
 
 	client := http.DefaultClient
