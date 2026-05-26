@@ -3,13 +3,43 @@
 A Go-native proxy that lets Claude Code run against any OpenAI-compatible
 model provider. Set `ANTHROPIC_BASE_URL` to point at shim, and Claude Code's
 Messages-API requests get translated into OpenAI ChatCompletions and routed
-to your configured upstream (Stage 0 ships one adapter: DeepSeek).
+to your configured upstream. Stage 0/1 ships one adapter: DeepSeek.
 
 Single static binary. Zero runtime dependencies. Stdlib-leaning.
 
-**Status: Stage 0 (in development).** What's listed under "What works" is
-what's wired. Anything in "What doesn't" returns a clear error rather than
-silently misbehaving.
+**Status: Stage 1 shipped, Stage 1.5 in progress.** What's listed under
+"What works" is what's wired. Anything in "What doesn't" returns a clear
+error rather than silently misbehaving.
+
+## When NOT to use shim
+
+If you only need DeepSeek and don't care about measurement, **skip shim
+entirely.** Per [DeepSeek's official Claude Code integration
+guide](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code),
+DeepSeek now serves a native Anthropic Messages API at
+`https://api.deepseek.com/anthropic`. Point Claude Code at it directly:
+
+```sh
+export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+export ANTHROPIC_AUTH_TOKEN=<your DeepSeek API key>
+```
+
+No proxy needed.
+
+## When shim adds value
+
+- **Honest measurement.** `GET /v1/metrics` surfaces per-endpoint latency
+  (p50/p95/p99), the gap between shim's token approximation and the
+  upstream's claimed count, and a running tally of every request shim
+  rewrote in flight. See [Measurement](#measurement).
+- **Loud-fail visibility on heuristic drift.** When shim modifies your
+  traffic — model name rewrite, `stop_sequences` truncation past OpenAI's
+  cap of 4, etc. — it logs the event and increments a counter in
+  `/v1/metrics`. Silent forwarding of modified requests is a bug.
+- **Multi-provider routing (Stage 3+).** Once shim ships a second adapter
+  (OpenAI proper / Groq / Ollama — selection pending), the same
+  measurement layer compares behaviour across providers. The Adapter
+  interface in `internal/adapter/` is the contract.
 
 ---
 
@@ -20,8 +50,8 @@ silently misbehaving.
 - `GET /v1/metrics` — per-endpoint latency p50/p95/p99, shim-vs-upstream token-delta totals, rewrite-event counts. See [Measurement](#measurement).
 - `GET /health` — `{"status":"ok"}`.
 - Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences` (capped at 4 per OpenAI's limit; over-cap requests are truncated and a `warn` log line emitted), `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
-- One adapter: **DeepSeek** (`https://api.deepseek.com/v1`).
-- Model mapping: the requested `model` value is replaced with the adapter's upstream model (Stage 0 DeepSeek = `deepseek-chat`, override via `UPSTREAM_MODEL`). When the names differ, an `info` log line records both. shim is not a model router — the client picks the adapter, the adapter picks the model.
+- One adapter: **DeepSeek** (`https://api.deepseek.com/v1`, OpenAI-compatible endpoint).
+- Model mapping: shim mirrors DeepSeek's [own server-side prefix rule](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code). Claude Code sends `claude-opus*`/`claude-sonnet*`/`claude-haiku*`; shim routes opus to `deepseek-v4-pro[1m]`, sonnet and haiku to `deepseek-v4-flash`. Override per role via `UPSTREAM_OPUS_MODEL` / `UPSTREAM_SONNET_MODEL` / `UPSTREAM_HAIKU_MODEL`. Non-claude-prefix names pass through unchanged unless `UPSTREAM_MODEL` is set as a catch-all. Every rewrite logs `info` and increments `rewrites.model` in `/v1/metrics`.
 - `shim run [args...]` launcher: locates `claude` on PATH, injects `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY=shim`, execs it, propagates exit code. Tested end-to-end with `claude --bare -p`.
 - Redacted-by-default JSON logs via `log/slog`. `Authorization`, prompt/message content, URL query strings, and credential-shaped keys are scrubbed at log-write time.
 - Cross-compiled binaries: `darwin/arm64`, `linux/amd64`, `linux/arm64`.
@@ -63,10 +93,13 @@ Copy `.env.example` to `.env` and fill in `UPSTREAM_API_KEY`. All variables:
 |---|---|---|
 | `BIND_ADDR` | `127.0.0.1` | Listen address. **Do not bind 0.0.0.0** unless you accept that the proxy carries your upstream API key and has no auth of its own. |
 | `PORT` | `8082` | TCP port. |
-| `ADAPTER` | `deepseek` | Adapter to use. Stage 0 only registers `deepseek`. |
+| `ADAPTER` | `deepseek` | Adapter to use. Stage 0/1 only registers `deepseek`. |
 | `UPSTREAM_API_KEY` | _required_ | Bearer token sent to the upstream. |
 | `UPSTREAM_BASE_URL` | `https://api.deepseek.com/v1` | Upstream root. |
-| `UPSTREAM_MODEL` | (empty) | Override default model (`deepseek-chat`). Set to `deepseek-reasoner` for R1. |
+| `UPSTREAM_OPUS_MODEL` | (empty → `deepseek-v4-pro[1m]`) | Override for `claude-opus*` inputs. |
+| `UPSTREAM_SONNET_MODEL` | (empty → `deepseek-v4-flash`) | Override for `claude-sonnet*` inputs. |
+| `UPSTREAM_HAIKU_MODEL` | (empty → `deepseek-v4-flash`) | Override for `claude-haiku*` inputs. |
+| `UPSTREAM_MODEL` | (empty) | Catch-all override for non-claude-prefix names (e.g. legacy `claude-3-5-sonnet-*`, direct `deepseek-v4-pro`). Empty = pass through. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `LOG_REDACT` | `true` | Scrub secrets and prompt content from logs. Set `false` for local debugging only. |
 | `MAX_REQUEST_BYTES` | `1048576` | Oversize body returns HTTP 413 Anthropic-shaped error. |
