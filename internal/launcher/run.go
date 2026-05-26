@@ -4,6 +4,7 @@
 package launcher
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -56,23 +57,10 @@ func Run(opts Options) (int, error) {
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
-		if errAs(err, &exitErr) {
+		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode(), nil
 		}
 		return 0, fmt.Errorf("%s: %w", bin, err)
 	}
 	return 0, nil
-}
-
-// errAs is a thin wrapper around errors.As kept here so this file doesn't
-// import "errors" alongside the rest. Keeps the file tight.
-func errAs(err error, target **exec.ExitError) bool {
-	if err == nil {
-		return false
-	}
-	if ee, ok := err.(*exec.ExitError); ok {
-		*target = ee
-		return true
-	}
-	return false
 }

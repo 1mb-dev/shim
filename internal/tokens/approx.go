@@ -5,8 +5,6 @@
 // measurement-stage boundary, not before.
 package tokens
 
-import "strings"
-
 // charsPerToken is the OpenAI-suggested rough average for English text on
 // cl100k_base. Source: https://platform.openai.com/tokenizer — "About 4
 // characters per token in English."
@@ -23,25 +21,4 @@ func Approximate(s string) int {
 		return 1
 	}
 	return n
-}
-
-// ApproximateMessages sums Approximate over each entry, plus a small
-// overhead per message to account for role/structure framing. Sufficient
-// for count_tokens; not load-bearing for billing.
-func ApproximateMessages(messages []string) int {
-	if len(messages) == 0 {
-		return 0
-	}
-	const perMessageOverhead = 4
-	total := 0
-	for _, m := range messages {
-		total += Approximate(m) + perMessageOverhead
-	}
-	return total
-}
-
-// CountConcat sums approximations over space-joined inputs. Convenience for
-// callers that already have a stream of strings.
-func CountConcat(parts ...string) int {
-	return Approximate(strings.Join(parts, " "))
 }
