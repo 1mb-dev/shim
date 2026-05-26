@@ -29,10 +29,10 @@ type Server struct {
 	measure *measure.Collector
 }
 
-// New constructs a Server. The adapter must already be registered (via the
-// blank import of its package) and configured (e.g. via deepseek.Configure).
-// Adapter.Validate() runs once here; misconfiguration fails startup loudly
-// rather than the first request.
+// New constructs a Server. The adapter must already be registered
+// (cmd/shim/main.go constructs the adapter via its New and calls
+// adapter.Register). Adapter.Validate() runs once here; misconfiguration
+// fails startup loudly rather than the first request.
 func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	a, ok := adapter.Get(cfg.Adapter)
 	if !ok {

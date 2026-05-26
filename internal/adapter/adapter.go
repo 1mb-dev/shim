@@ -5,9 +5,12 @@
 //
 //	package myprovider
 //	import "github.com/1mb-dev/shim/internal/adapter"
-//	func init() { adapter.Register(&Adapter{}) }
 //
-// The server enables a provider via a blank import in cmd/shim/main.go.
+//	func New(opts Opts) (adapter.Adapter, error) { ... }
+//
+// cmd/shim/main.go constructs the adapter via its New, then calls
+// adapter.Register with the returned instance — no init()-time
+// registration, no blank-import side effects.
 package adapter
 
 import (
@@ -57,9 +60,9 @@ var (
 	registry = map[string]Adapter{}
 )
 
-// Register adds a in the global registry. Intended to be called from an
-// adapter sub-package's init(). Panics on duplicate registration so
-// misconfiguration fails at startup, not at first request.
+// Register adds a in the global registry. Called from cmd/shim/main.go
+// after constructing the adapter via its New. Panics on duplicate
+// registration so misconfiguration fails at startup, not at first request.
 func Register(a Adapter) {
 	if a == nil {
 		panic("adapter: Register called with nil adapter")
