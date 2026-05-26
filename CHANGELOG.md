@@ -3,6 +3,25 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] — Stage 1.5 (2026-05-26)
+
+Parity pass against [DeepSeek's official Claude Code integration guide](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code) — DeepSeek now exposes a native Anthropic Messages API at `api.deepseek.com/anthropic`, with server-side claude-prefix model mapping. shim mirrors that mapping rule and clarifies when shim adds value vs. when to use the native endpoint directly.
+
+### Added
+- Prefix-aware `MapModel` in DeepSeek adapter: `claude-opus*` → `deepseek-v4-pro[1m]`; `claude-sonnet*` → `deepseek-v4-flash`; `claude-haiku*` → `deepseek-v4-flash`. Mirrors DeepSeek's own server-side rule.
+- Per-role config env vars: `UPSTREAM_OPUS_MODEL`, `UPSTREAM_SONNET_MODEL`, `UPSTREAM_HAIKU_MODEL` override the role defaults independently.
+- `internal/adapter/deepseek.ConfigureOpts` struct — `Configure(...)` switched from positional args so future fields don't break call sites.
+
+### Changed
+- README: new "When NOT to use shim" / "When shim adds value" sections at the top. Pure-DeepSeek users are pointed directly at `api.deepseek.com/anthropic`. shim's value-prop reframed around measurement, loud-fail visibility, and Stage 3+ multi-provider routing.
+- `.env.example`: documents per-role env vars + `UPSTREAM_MODEL` catch-all semantics + the new claude-prefix rule.
+- `UPSTREAM_MODEL` semantics: was a blanket override; now applies only to non-`claude-{opus,sonnet,haiku}` inputs (e.g. legacy `claude-3-5-sonnet-*`, direct `deepseek-v4-pro`).
+
+### Known limitations
+- Web Search tool (Claude Code → DeepSeek native) not yet translated through shim. Use the native endpoint if you need it.
+- `ANTHROPIC_AUTH_TOKEN` (the guide's recommended env var name) is not set by `shim run`; shim's launcher still injects `ANTHROPIC_API_KEY=shim` (Claude Code accepts either; shim's loopback config doesn't care).
+- Legacy `claude-3-5-sonnet-*`-style names no longer auto-rewrite to `deepseek-chat` — they fall through to the catch-all branch. Users on legacy names: set `UPSTREAM_MODEL=deepseek-chat` in `.env` or update to current model identifiers.
+
 ## [Unreleased] — Stage 1 (2026-05-26)
 
 ### Added
