@@ -16,7 +16,7 @@ Four `/code-review` MED items folded in.
 
 ### Changed
 - `/v1/messages/count_tokens` and `/v1/metrics` `token_delta.shim_total` now report cl100k_base counts. Under cl100k the number is exact and reproducible; vs. DeepSeek's actual (unpublished) tokenizer it remains an approximation — `/v1/metrics` is still a drift signal, not a billing-grade count. README documents the caveat.
-- `RecordTokenDelta` call sites moved to after-success in both `handlers.go` and `stream.go`; failed back-translation or SSE build no longer credits `shim_total` for a request the client never saw a 200 for.
+- `RecordTokenDelta` call sites moved in both `handlers.go` and `stream.go` — now fire after translation succeeds (after `OpenAIToAnthropic` / `ToAnthropicSSE`) but before the response is written to the client. Failed back-translation no longer credits `shim_total`. A subsequent write failure mid-body still records, since the protocol-level 200 was already on the wire.
 - `RecordTokenDelta` no-ops when both `Usage.PromptTokens` and `Usage.CompletionTokens` are zero — upstream omitted the block; recording 0/0 dilutes averages without signal.
 
 ### Removed

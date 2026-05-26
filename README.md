@@ -241,8 +241,10 @@ land in `CHANGELOG.md`.
 
 The `count_tokens` endpoint and the `token_delta.shim_total` field above
 use **cl100k_base** — OpenAI's GPT-3.5/GPT-4 BPE tokenizer, loaded via
-`pkoukk/tiktoken-go` with offline-embedded tables. Under cl100k the count
-is exact and reproducible.
+`pkoukk/tiktoken-go` with offline-embedded tables. shim calls
+`EncodeOrdinary` (special tokens like `<|endoftext|>` are not processed
+specially), so the count is reproducible byte-for-byte across runs for
+any given input.
 
 DeepSeek (and most non-OpenAI upstreams) don't publish their tokenizer,
 so cl100k is an **approximation across tokenizers** — close enough for
