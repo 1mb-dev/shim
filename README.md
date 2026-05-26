@@ -17,6 +17,7 @@ silently misbehaving.
 
 - `POST /v1/messages` — Anthropic Messages API. Non-streaming AND streaming (`{"stream": true}` returns the canonical Anthropic SSE event sequence: `message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` → `message_delta` → `message_stop`).
 - `POST /v1/messages/count_tokens` — approximate token count (see [Measurement](#measurement)).
+- `GET /v1/metrics` — per-endpoint latency p50/p95/p99, shim-vs-upstream token-delta totals, rewrite-event counts. See [Measurement](#measurement).
 - `GET /health` — `{"status":"ok"}`.
 - Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences` (capped at 4 per OpenAI's limit; over-cap requests are truncated and a `warn` log line emitted), `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
 - One adapter: **DeepSeek** (`https://api.deepseek.com/v1`).
@@ -129,13 +130,74 @@ The launcher prints a single breadcrumb line to stderr (`shim run → claude=/pa
 
 ## Measurement
 
-The Stage 0 `count_tokens` endpoint and the `usage` field on responses use
-an **approximation** — `len(text) / 4` per the OpenAI tokenizer guidance.
-This is sufficient for in-session sanity checks but is **not** a substitute
-for a real tokenizer when calculating bills. An exact tokenizer is planned
-at the measurement-stage boundary; the specific library is not yet chosen.
+`GET /v1/metrics` returns a JSON snapshot of what shim has done since
+startup. Per-endpoint latency (p50/p95/p99 from a 1024-sample reservoir),
+the gap between shim's token approximation and the upstream's claimed
+count, and how often shim rewrites requests in flight.
 
-Response usage shape (Anthropic Messages contract):
+```sh
+curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
+```
+
+```json
+{
+    "latency": {
+        "/health": {
+            "p50": 0.002517, "p95": 0.003018, "p99": 0.003067, "n": 5
+        },
+        "/v1/messages": {
+            "p50": 0.316637, "p95": 0.980266, "p99": 1.585670, "n": 14
+        },
+        "/v1/messages/count_tokens": {
+            "p50": 0.046325, "p95": 0.054247, "p99": 0.054951, "n": 3
+        }
+    },
+    "token_delta": {
+        "/v1/messages": {
+            "shim_total": 86,
+            "upstream_prompt_total": 336,
+            "upstream_completion_total": 168,
+            "n": 14
+        }
+    },
+    "rewrites": {
+        "model": 14,
+        "stop_sequences": 2
+    }
+}
+```
+
+**How to read it.**
+
+- `latency.<path>.{p50,p95,p99}` — milliseconds, from the per-endpoint
+  reservoir. `n` is total observations since startup (the reservoir caps at
+  1024 samples for percentile compute; `n` keeps counting past that).
+- `token_delta.<path>.shim_total` is shim's `chars/4` approximation of every
+  prompt's input. `upstream_prompt_total` is what the upstream reported back
+  in `usage.prompt_tokens`. The gap is the drift — wide gap means the
+  heuristic is off for your traffic shape and a real tokenizer would change
+  the bill estimate.
+- `rewrites.model` counts how often shim replaced the requested model name
+  (Stage 0's DeepSeek adapter rewrites every request, so this matches
+  `/v1/messages` `n`). `rewrites.stop_sequences` counts over-cap truncations.
+
+**Caveats.** The endpoint is loopback-only by default (no auth — matches
+`/health`). State is in-memory only and resets on restart. The JSON shape
+is committed for Stage 1 but unstable until v0.1.0; breaking changes will
+land in `CHANGELOG.md`.
+
+### Token approximation
+
+The `count_tokens` endpoint and the `token_delta.shim_total` field above
+use an **approximation** — `len(text) / 4` per the OpenAI tokenizer
+guidance. This is sufficient for in-session sanity checks but is **not** a
+substitute for a real tokenizer when calculating bills. An exact tokenizer
+is planned at the measurement-stage boundary; the specific library is not
+yet chosen.
+
+Response usage shape (Anthropic Messages contract) — these values come
+straight from the upstream's `usage.prompt_tokens` and
+`usage.completion_tokens`, not from shim's approximation:
 
 ```json
 {
@@ -145,10 +207,6 @@ Response usage shape (Anthropic Messages contract):
   }
 }
 ```
-
-Source values come from the upstream's `usage.prompt_tokens` and
-`usage.completion_tokens` — they reflect whatever the upstream reports, not
-a shim-side recount.
 
 ## Project layout
 
@@ -161,6 +219,7 @@ internal/
     deepseek/         # Stage 0 adapter
   translate/          # Anthropic ↔ OpenAI
   tokens/             # approximation
+  measure/            # /v1/metrics collector (latency, token delta, rewrites)
   launcher/           # shim run
   server/             # HTTP server + handlers + error taxonomy
 testdata/fixtures/    # recorded upstream responses for tests

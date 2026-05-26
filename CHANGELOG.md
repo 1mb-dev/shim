@@ -3,6 +3,22 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] — Stage 1 (2026-05-26)
+
+### Added
+- `GET /v1/metrics` — in-memory snapshot of per-endpoint latency p50/p95/p99 (from a 1024-sample reservoir), shim-vs-upstream token-delta totals, and rewrite-event counts (model rewrites, `stop_sequences` truncations). Loopback-only, no auth (matches `/health`). State resets on restart.
+- `Adapter.Validate() error` on the adapter interface — startup-time check; misconfigured adapter blocks `Server.New` rather than failing per-request with a 401.
+- `internal/measure/` package: `Collector`, `Snapshot`, `LatencyStats`, `TokenStats`, Vitter-R reservoir sampling, mutex-guarded under `-race`.
+- Tests: real `httptest.NewServer` for handler tests (exercises mux + `MaxBytesReader` + `WriteTimeout` end-to-end), `Start`/`Shutdown` lifecycle test, `writeUpstreamError` default-branch test (was uncovered), `json.Encode` / `writeSSE` failure-path tests.
+
+### Changed
+- Per-handler latency capture wraps `defer` in a closure so `time.Since(start)` evaluates at return, not at defer-statement time (the naïve form would have silently recorded ~0ms — a thesis-1 violation caught by `golangci-lint` pre-merge).
+- README "Measurement" section now leads with `/v1/metrics` and grounds its JSON example in a live smoke capture.
+
+### Removed
+- `preflightAdapter` substring-match backchannel and its per-request call site — replaced by `Adapter.Validate()` at startup. Closes Linus-review HIGH (handlers.go:180-187).
+- `internal/tokens.ApproximateMessages` and `CountConcat` — unused since Stage 0. Hand-rolled `errAs` in `internal/launcher` — replaced by `errors.As`.
+
 ## [Unreleased] — Stage 0 (2026-05-25)
 
 Initial cut. Single static Go binary, zero runtime dependencies.
