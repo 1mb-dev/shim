@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/1mb-dev/shim/internal/adapter"
 	"github.com/1mb-dev/shim/internal/config"
+	"github.com/1mb-dev/shim/internal/measure"
 )
 
 // stub is an Adapter test double the server can drive without DeepSeek.
@@ -571,6 +574,43 @@ func TestMessages_NoRewriteLogWhenIdentical(t *testing.T) {
 	}
 }
 
+func TestCountTokens_Malformed(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, _ := newTestServer(t, s)
+
+	resp := doPOST(t, srv, "/v1/messages/count_tokens", "not-json")
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+	if !strings.Contains(respBody, "malformed JSON") {
+		t.Errorf("body should mention malformed JSON: %s", respBody)
+	}
+}
+
+// TestCountTokens_WithSystem: covers approxInputTokens' system-populated
+// branch (only exercised via /v1/messages otherwise). Joint test for
+// approxInputTokens + handleCountTokens with system block present.
+func TestCountTokens_WithSystem(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, _ := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"system":"You are a calm assistant.","messages":[{"role":"user","content":"hi"}]}`
+	resp := doPOST(t, srv, "/v1/messages/count_tokens", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
+	}
+	var out map[string]int
+	_ = json.Unmarshal([]byte(respBody), &out)
+	// System ~28 chars + content ~2 chars + space = ~31 chars / 4 ≈ 7
+	if out["input_tokens"] < 6 {
+		t.Errorf("input_tokens = %d, want > 6 (system contributes)", out["input_tokens"])
+	}
+}
+
 func TestCountTokens(t *testing.T) {
 	s := newStub()
 	defer s.close()
@@ -658,6 +698,73 @@ func TestStream_WriteFailureLogged(t *testing.T) {
 	}
 }
 
+// TestMetrics_EndToEnd: issue N=50 requests against /v1/messages, then GET
+// /v1/metrics and assert the collector saw all N. Verifies (a) the
+// collector wiring fires on every request, (b) the route is registered,
+// (c) the JSON shape matches what the README will document.
+func TestMetrics_EndToEnd(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, _ := newTestServer(t, s)
+
+	const N = 50
+	body := `{"model":"claude-3-opus","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	for i := 0; i < N; i++ {
+		resp := doPOST(t, srv, "/v1/messages", body)
+		bodyOf(t, resp)
+		if resp.StatusCode != 200 {
+			t.Fatalf("request %d failed: status %d", i, resp.StatusCode)
+		}
+	}
+
+	resp := doGET(t, srv, "/v1/metrics")
+	bodyStr := bodyOf(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("metrics status = %d, body = %s", resp.StatusCode, bodyStr)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	// Wire-shape pins so the JSON tags don't drift silently.
+	for _, want := range []string{`"latency"`, `"token_delta"`, `"rewrites"`, `"p50"`, `"p95"`, `"p99"`, `"shim_total"`, `"upstream_prompt_total"`, `"upstream_completion_total"`} {
+		if !strings.Contains(bodyStr, want) {
+			t.Errorf("metrics JSON missing %s; body:\n%s", want, bodyStr)
+		}
+	}
+
+	var snap measure.Snapshot
+	if err := json.Unmarshal([]byte(bodyStr), &snap); err != nil {
+		t.Fatalf("snapshot unmarshal: %v\nbody: %s", err, bodyStr)
+	}
+
+	if got := snap.Latency["/v1/messages"].N; got != N {
+		t.Errorf("latency N = %d, want %d", got, N)
+	}
+	if snap.Latency["/v1/messages"].P50 <= 0 {
+		t.Errorf("P50 = %v, want > 0", snap.Latency["/v1/messages"].P50)
+	}
+
+	if got := snap.Tokens["/v1/messages"].N; got != N {
+		t.Errorf("token_delta N = %d, want %d", got, N)
+	}
+	// Stub's hardcoded upstream response: usage.prompt_tokens=3, completion_tokens=2.
+	if got := snap.Tokens["/v1/messages"].UpstreamPromptTotal; got != N*3 {
+		t.Errorf("UpstreamPromptTotal = %d, want %d", got, N*3)
+	}
+	if got := snap.Tokens["/v1/messages"].UpstreamCompletionTotal; got != N*2 {
+		t.Errorf("UpstreamCompletionTotal = %d, want %d", got, N*2)
+	}
+	// Stub always maps claude-3-opus → stub-model, so every request rewrites.
+	if got := snap.Rewrites[measure.RewriteModel]; got != N {
+		t.Errorf("rewrites[%q] = %d, want %d", measure.RewriteModel, got, N)
+	}
+	// No stop_sequences in the request body, so no truncation.
+	if got := snap.Rewrites[measure.RewriteStopSequences]; got != 0 {
+		t.Errorf("rewrites[%q] = %d, want 0", measure.RewriteStopSequences, got)
+	}
+}
+
 // TestBindAddrExplicit asserts Server.Addr is bind+port — caller misuse
 // (binding to :8082 instead of 127.0.0.1:8082) would surface here.
 func TestBindAddrExplicit(t *testing.T) {
@@ -666,6 +773,104 @@ func TestBindAddrExplicit(t *testing.T) {
 	srv, _ := newTestServer(t, s)
 	if !strings.HasPrefix(srv.Addr(), "127.0.0.1:") {
 		t.Errorf("Addr = %q, want 127.0.0.1: prefix", srv.Addr())
+	}
+}
+
+// TestMessages_UpstreamBadRequest_400 pins writeUpstreamError's default
+// branch (non-401/403/429/5xx upstream status) → maps to 502 errAPI.
+// Without this fence, the default branch can mis-class silently. Closes
+// Jordan-review HIGH finding (handlers.go:192 default branch uncovered).
+func TestMessages_UpstreamBadRequest_400(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	s.mu.Lock()
+	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":"upstream rejected prompt"}`))
+	}
+	s.mu.Unlock()
+	srv, _ := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502 (default branch)", resp.StatusCode)
+	}
+	if !strings.Contains(respBody, "upstream error") {
+		t.Errorf("body should surface default-branch message: %s", respBody)
+	}
+}
+
+// TestStartShutdown exercises Start (which calls http.Server.ListenAndServe)
+// and Shutdown end-to-end against a real socket. Picks a free port via
+// net.Listen→Close (brief race acceptable at test scale), then dial-polls
+// until bound. Closes a 0%-coverage gap on server lifecycle.
+func TestStartShutdown(t *testing.T) {
+	s := newStub()
+	defer s.close()
+
+	// Grab a free port; close immediately so http.Server can bind it.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+
+	adapter.Register(s)
+	logBuf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	cfg := &config.Config{
+		BindAddr:        "127.0.0.1",
+		Port:            port,
+		Adapter:         s.name,
+		UpstreamAPIKey:  "sk-test",
+		MaxRequestBytes: 4096,
+	}
+	srv, err := New(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Start() }()
+
+	// Poll for the socket to come up. 100 × 10ms = 1s budget.
+	bound := false
+	for i := 0; i < 100; i++ {
+		conn, err := net.DialTimeout("tcp", srv.Addr(), 50*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			bound = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !bound {
+		t.Fatal("server never bound")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown: %v", err)
+	}
+
+	// Channel receive synchronizes with the Start goroutine — only safe to
+	// read logBuf after this. Dialing a TCP socket alone doesn't establish
+	// happens-before with the goroutine that wrote to logBuf.
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Start returned non-nil after Shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after Shutdown")
+	}
+
+	if !strings.Contains(logBuf.String(), "shim listening") {
+		t.Errorf("expected 'shim listening' log; got: %s", logBuf.String())
 	}
 }
 

@@ -27,6 +27,23 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
+// handleMetrics — GET /v1/metrics → measure.Snapshot as JSON. No auth;
+// matches /health's loopback-only trust model. The README's "Measurement"
+// section documents the wire shape and the no-auth implication.
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	start := time.Now()
+	defer func() { s.measure.RecordLatency("/v1/metrics", time.Since(start)) }()
+
+	snap := s.measure.Snapshot()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(snap); err != nil {
+		s.log.Error("response encode failed",
+			slog.String("path", "/v1/metrics"),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
 // logModelRewrite emits a breadcrumb when the adapter rewrites the
 // requested model name + records the rewrite event for /v1/metrics. Stage
 // 0 thesis-2: never silently forward modified traffic.
