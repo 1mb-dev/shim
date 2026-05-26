@@ -16,10 +16,9 @@ import (
 const encodingName = "cl100k_base"
 
 var (
-	encoder    *tiktoken.Tiktoken
-	initOnce   sync.Once
-	initErr    error
-	initCalled bool
+	encoder  *tiktoken.Tiktoken
+	initOnce sync.Once
+	initErr  error
 )
 
 // Init loads the cl100k_base BPE table. Safe to call multiple times;
@@ -35,16 +34,16 @@ func Init() error {
 			return
 		}
 		encoder = enc
-		initCalled = true
 	})
 	return initErr
 }
 
 // Count returns the number of BPE tokens in s under cl100k_base. Returns 0
 // for the empty string. Panics if Init has not been called successfully —
-// thesis-2 loud-fail: a count without init is a wiring bug.
+// thesis-2 loud-fail: a count without init is a wiring bug. The encoder
+// pointer is the source of truth: nil ⇒ Init never ran or failed.
 func Count(s string) int {
-	if !initCalled {
+	if encoder == nil {
 		panic("tokens: Count called before Init (or Init failed)")
 	}
 	if s == "" {
