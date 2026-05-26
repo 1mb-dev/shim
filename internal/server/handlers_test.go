@@ -88,6 +88,47 @@ type errUpstreamStatus int
 
 func (e errUpstreamStatus) Error() string { return "upstream status" }
 
+// failWriter is an http.ResponseWriter that errors on every Write — used to
+// force the json.Encode failure path in handleMessages / handleCountTokens.
+// Headers + status are recorded so tests can still assert on them.
+type failWriter struct {
+	headers http.Header
+	code    int
+}
+
+func newFailWriter() *failWriter { return &failWriter{headers: http.Header{}} }
+
+func (f *failWriter) Header() http.Header  { return f.headers }
+func (f *failWriter) WriteHeader(code int) { f.code = code }
+func (f *failWriter) Write(_ []byte) (int, error) {
+	return 0, errStr("write failed")
+}
+
+// failAfterNFlushWriter implements http.ResponseWriter + http.Flusher and
+// succeeds for the first n Writes, then errors. Used to force writeSSE
+// failure mid-stream (after some events have already been emitted).
+type failAfterNFlushWriter struct {
+	headers       http.Header
+	code          int
+	flushed       int
+	successesLeft int
+}
+
+func newFailAfterNFlushWriter(n int) *failAfterNFlushWriter {
+	return &failAfterNFlushWriter{headers: http.Header{}, successesLeft: n}
+}
+
+func (f *failAfterNFlushWriter) Header() http.Header  { return f.headers }
+func (f *failAfterNFlushWriter) WriteHeader(code int) { f.code = code }
+func (f *failAfterNFlushWriter) Flush()               { f.flushed++ }
+func (f *failAfterNFlushWriter) Write(b []byte) (int, error) {
+	if f.successesLeft <= 0 {
+		return 0, errStr("write failed")
+	}
+	f.successesLeft--
+	return len(b), nil
+}
+
 // --- harness helpers ---
 
 func newTestServer(t *testing.T, s *stub) (*Server, *bytes.Buffer) {
@@ -495,6 +536,75 @@ func TestCountTokens(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
 	if out["input_tokens"] < 1 {
 		t.Errorf("input_tokens = %d, want > 0", out["input_tokens"])
+	}
+}
+
+// TestMessages_EncodeFailureLogged: /v1/messages succeeded upstream, but the
+// final json.Encode of the Anthropic response into the client connection
+// fails (client disconnected, write error, etc). Headers + 200 are already
+// committed by stdlib server in production — there's no way to reverse-out.
+// Loud-fail through the log is the only honest signal.
+func TestMessages_EncodeFailureLogged(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, logBuf := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	fw := newFailWriter()
+
+	srv.handleMessages(fw, req)
+
+	if !strings.Contains(logBuf.String(), `"response encode failed"`) {
+		t.Fatalf("expected response encode failed log, got: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), `"path":"/v1/messages"`) {
+		t.Errorf("encode-failure log missing path key: %s", logBuf.String())
+	}
+}
+
+// TestCountTokens_EncodeFailureLogged: same as above for the count_tokens
+// path — silent partial-write surface; only the log saves us.
+func TestCountTokens_EncodeFailureLogged(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, logBuf := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(body))
+	fw := newFailWriter()
+
+	srv.handleCountTokens(fw, req)
+
+	if !strings.Contains(logBuf.String(), `"response encode failed"`) {
+		t.Fatalf("expected response encode failed log, got: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), `"path":"/v1/messages/count_tokens"`) {
+		t.Errorf("encode-failure log missing path key: %s", logBuf.String())
+	}
+}
+
+// TestStream_WriteFailureLogged: streaming path emits a 6-event sequence;
+// fail mid-sequence (after the first 3 events succeed) and assert the log
+// line fires + no panic. Connection is already in SSE mode so no error
+// response is possible — log is the only honest signal.
+func TestStream_WriteFailureLogged(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, logBuf := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	fw := newFailAfterNFlushWriter(3) // first 3 events ok, 4th errors
+
+	// must not panic
+	srv.handleMessages(fw, req)
+
+	if !strings.Contains(logBuf.String(), `"sse write failed"`) {
+		t.Fatalf("expected sse write failed log, got: %s", logBuf.String())
+	}
+	if fw.flushed < 3 {
+		t.Errorf("expected at least 3 successful flushes before failure, got %d", fw.flushed)
 	}
 }
 
