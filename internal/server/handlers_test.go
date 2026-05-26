@@ -56,11 +56,8 @@ func newStub() *stub {
 
 func (s *stub) close() { s.upstream.Close() }
 
-func (s *stub) Name() string         { return s.name }
-func (s *stub) DefaultModel() string { return "stub-model" }
-func (s *stub) MapModel(string) string {
-	return s.DefaultModel()
-}
+func (s *stub) Name() string           { return s.name }
+func (s *stub) MapModel(string) string { return "stub-model" }
 func (s *stub) Validate() error {
 	if s.missingKey {
 		return errKeyMissing

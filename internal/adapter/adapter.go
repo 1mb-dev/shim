@@ -28,11 +28,11 @@ type Adapter interface {
 	// Name returns the lookup key used by config (e.g. "deepseek").
 	Name() string
 
-	// DefaultModel is used when a request omits a mappable model name.
-	DefaultModel() string
-
 	// MapModel converts an Anthropic-style model name (which may be e.g.
 	// "claude-3-5-sonnet-20240620") into the upstream's expected name.
+	// Adapters handle the empty-input case themselves — typically by
+	// returning a "default" model — so callers never need a separate
+	// DefaultModel() probe.
 	MapModel(anthropicModel string) string
 
 	// Validate confirms the adapter has all configuration it needs to serve

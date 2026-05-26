@@ -11,7 +11,6 @@ import (
 type fake struct{ name string }
 
 func (f *fake) Name() string                                                { return f.name }
-func (f *fake) DefaultModel() string                                        { return "default" }
 func (f *fake) MapModel(string) string                                      { return "mapped" }
 func (f *fake) Validate() error                                             { return nil }
 func (f *fake) BuildRequest(context.Context, []byte) (*http.Request, error) { return nil, nil }

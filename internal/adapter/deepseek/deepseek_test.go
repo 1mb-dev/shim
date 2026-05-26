@@ -34,17 +34,10 @@ func testAdapterRoles(baseURL, apiKey, modelOverride, opus, sonnet, haiku string
 	}
 }
 
-func TestNameAndDefaultModel(t *testing.T) {
+func TestName(t *testing.T) {
 	a := testAdapter("https://api.deepseek.com/v1", "k")
 	if a.Name() != "deepseek" {
 		t.Errorf("Name = %q", a.Name())
-	}
-	if a.DefaultModel() != "deepseek-chat" {
-		t.Errorf("DefaultModel = %q", a.DefaultModel())
-	}
-	a.modelOverride = "deepseek-reasoner"
-	if a.DefaultModel() != "deepseek-reasoner" {
-		t.Errorf("override not honoured: %q", a.DefaultModel())
 	}
 }
 
@@ -327,8 +320,8 @@ func TestNew(t *testing.T) {
 	if got.baseURL != "https://x/v1" {
 		t.Errorf("trailing slash not trimmed: %q", got.baseURL)
 	}
-	if got.DefaultModel() != "deepseek-reasoner" {
-		t.Errorf("override lost: %q", got.DefaultModel())
+	if mapped := got.MapModel(""); mapped != "deepseek-reasoner" {
+		t.Errorf("empty-input fallback should use modelOverride, got %q", mapped)
 	}
 	if got.opusModel != "custom-opus" {
 		t.Errorf("opusModel = %q, want custom-opus", got.opusModel)

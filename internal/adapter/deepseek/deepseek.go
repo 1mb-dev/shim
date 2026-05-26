@@ -84,13 +84,6 @@ func New(opts ConfigureOpts) (adapter.Adapter, error) {
 
 func (a *impl) Name() string { return Name }
 
-func (a *impl) DefaultModel() string {
-	if a.modelOverride != "" {
-		return a.modelOverride
-	}
-	return DefaultModel
-}
-
 // MapModel routes an Anthropic-style model name to the DeepSeek upstream
 // model. Mapping rule mirrors DeepSeek's own server-side rule on its native
 // Anthropic endpoint (per the official Claude Code integration guide):
