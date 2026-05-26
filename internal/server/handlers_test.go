@@ -153,23 +153,44 @@ func newTestServer(t *testing.T, s *stub) (*Server, *bytes.Buffer) {
 	return srv, logBuf
 }
 
-func doPOST(srv *Server, path, body string) *httptest.ResponseRecorder {
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	switch path {
-	case "/v1/messages":
-		srv.handleMessages(rec, req)
-	case "/v1/messages/count_tokens":
-		srv.handleCountTokens(rec, req)
+// doPOST drives a real httptest.NewServer wired to the Server's mux, so
+// MaxBytesReader, WriteTimeout, Flusher-capable ResponseWriter, and route
+// patterns are all exercised through the same stdlib path production uses.
+// The direct-handler-invocation pattern survives only for tests that need
+// to inject a custom ResponseWriter (failWriter, failAfterNFlushWriter).
+func doPOST(t *testing.T, srv *Server, path, body string) *http.Response {
+	t.Helper()
+	ts := httptest.NewServer(srv.http.Handler)
+	t.Cleanup(ts.Close)
+	resp, err := http.Post(ts.URL+path, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
 	}
-	return rec
+	return resp
 }
 
-func doGET(srv *Server, path string) *httptest.ResponseRecorder {
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
-	srv.handleHealth(rec, req)
-	return rec
+func doGET(t *testing.T, srv *Server, path string) *http.Response {
+	t.Helper()
+	ts := httptest.NewServer(srv.http.Handler)
+	t.Cleanup(ts.Close)
+	resp, err := http.Get(ts.URL + path)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	return resp
+}
+
+// bodyOf reads + closes resp.Body once and returns it as a string. Use this
+// where the previous test pattern called rec.Body.String() — call once per
+// test, cache the result.
+func bodyOf(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return string(b)
 }
 
 // --- tests ---
@@ -179,12 +200,13 @@ func TestHealth(t *testing.T) {
 	defer s.close()
 	srv, _ := newTestServer(t, s)
 
-	rec := doGET(srv, "/health")
-	if rec.Code != 200 {
-		t.Errorf("status = %d", rec.Code)
+	resp := doGET(t, srv, "/health")
+	body := bodyOf(t, resp)
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d", resp.StatusCode)
 	}
-	if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
-		t.Errorf("body = %s", rec.Body.String())
+	if !strings.Contains(body, `"status":"ok"`) {
+		t.Errorf("body = %s", body)
 	}
 }
 
@@ -194,12 +216,13 @@ func TestMessages_Happy(t *testing.T) {
 	srv, logBuf := newTestServer(t, s)
 
 	body := `{"model":"claude-3-5","max_tokens":10,"messages":[{"role":"user","content":"hi there"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
 	}
 	var out map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	_ = json.Unmarshal([]byte(respBody), &out)
 	if out["type"] != "message" {
 		t.Errorf("type = %v", out["type"])
 	}
@@ -251,15 +274,16 @@ func TestMessages_StreamSucceeds(t *testing.T) {
 	srv, logBuf := newTestServer(t, s)
 
 	body := `{"model":"claude-3-5","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200, body=%s", resp.StatusCode, respBody)
 	}
-	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+	if got := resp.Header.Get("Content-Type"); got != "text/event-stream" {
 		t.Errorf("Content-Type = %q, want text/event-stream", got)
 	}
 
-	events := parseSSE(rec.Body.String())
+	events := parseSSE(respBody)
 	wantNames := []string{
 		"message_start",
 		"content_block_start",
@@ -269,7 +293,7 @@ func TestMessages_StreamSucceeds(t *testing.T) {
 		"message_stop",
 	}
 	if len(events) != len(wantNames) {
-		t.Fatalf("event count = %d, want %d; body:\n%s", len(events), len(wantNames), rec.Body.String())
+		t.Fatalf("event count = %d, want %d; body:\n%s", len(events), len(wantNames), respBody)
 	}
 	for i, want := range wantNames {
 		if events[i].name != want {
@@ -305,16 +329,17 @@ func TestMessages_StreamUpstreamError(t *testing.T) {
 	srv, _ := newTestServer(t, s)
 
 	body := `{"model":"x","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
 
-	if rec.Code != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", rec.Code)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
 	}
-	if ct := rec.Header().Get("Content-Type"); ct == "text/event-stream" {
+	if ct := resp.Header.Get("Content-Type"); ct == "text/event-stream" {
 		t.Errorf("Content-Type should not be SSE on upstream error: %q", ct)
 	}
-	if !strings.Contains(rec.Body.String(), `"error"`) {
-		t.Errorf("body should be Anthropic-shaped error: %s", rec.Body.String())
+	if !strings.Contains(respBody, `"error"`) {
+		t.Errorf("body should be Anthropic-shaped error: %s", respBody)
 	}
 }
 
@@ -332,9 +357,10 @@ func TestMessages_StreamUpstreamMalformed(t *testing.T) {
 	srv, _ := newTestServer(t, s)
 
 	body := `{"model":"x","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", rec.Code)
+	resp := doPOST(t, srv, "/v1/messages", body)
+	bodyOf(t, resp) // drain
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
 	}
 }
 
@@ -344,12 +370,13 @@ func TestMessages_ThinkingRejected(t *testing.T) {
 	srv, _ := newTestServer(t, s)
 
 	body := `{"model":"x","max_tokens":1,"messages":[{"role":"assistant","content":[{"type":"thinking","text":"hmm"}]}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != http.StatusNotImplemented {
-		t.Errorf("status = %d, want 501", rec.Code)
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", resp.StatusCode)
 	}
-	if !strings.Contains(rec.Body.String(), "thinking") {
-		t.Errorf("body should explain thinking: %s", rec.Body.String())
+	if !strings.Contains(respBody, "thinking") {
+		t.Errorf("body should explain thinking: %s", respBody)
 	}
 }
 
@@ -358,9 +385,10 @@ func TestMessages_Malformed(t *testing.T) {
 	defer s.close()
 	srv, _ := newTestServer(t, s)
 
-	rec := doPOST(srv, "/v1/messages", "not-json")
-	if rec.Code != 400 {
-		t.Errorf("status = %d, want 400", rec.Code)
+	resp := doPOST(t, srv, "/v1/messages", "not-json")
+	bodyOf(t, resp) // drain
+	if resp.StatusCode != 400 {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
 }
 
@@ -397,12 +425,13 @@ func TestMessages_OversizedBody(t *testing.T) {
 
 	huge := strings.Repeat("x", 8192) // 2× MaxRequestBytes (4096)
 	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"` + huge + `"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("status = %d, want 413", rec.Code)
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413", resp.StatusCode)
 	}
-	if !strings.Contains(rec.Body.String(), "MAX_REQUEST_BYTES") {
-		t.Errorf("body should mention MAX_REQUEST_BYTES: %s", rec.Body.String())
+	if !strings.Contains(respBody, "MAX_REQUEST_BYTES") {
+		t.Errorf("body should mention MAX_REQUEST_BYTES: %s", respBody)
 	}
 }
 
@@ -418,9 +447,10 @@ func TestMessages_Upstream5xx(t *testing.T) {
 
 	srv, _ := newTestServer(t, s)
 	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", rec.Code)
+	resp := doPOST(t, srv, "/v1/messages", body)
+	bodyOf(t, resp) // drain
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
 	}
 }
 
@@ -436,12 +466,13 @@ func TestMessages_UpstreamBadKey(t *testing.T) {
 
 	srv, _ := newTestServer(t, s)
 	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != 401 {
-		t.Errorf("status = %d, want 401", rec.Code)
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != 401 {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
-	if !strings.Contains(rec.Body.String(), "rejected") {
-		t.Errorf("body should explain key rejection: %s", rec.Body.String())
+	if !strings.Contains(respBody, "rejected") {
+		t.Errorf("body should explain key rejection: %s", respBody)
 	}
 }
 
@@ -455,9 +486,10 @@ func TestMessages_UpstreamRateLimit(t *testing.T) {
 	s.mu.Unlock()
 	srv, _ := newTestServer(t, s)
 	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != 429 {
-		t.Errorf("status = %d, want 429", rec.Code)
+	resp := doPOST(t, srv, "/v1/messages", body)
+	bodyOf(t, resp) // drain
+	if resp.StatusCode != 429 {
+		t.Errorf("status = %d, want 429", resp.StatusCode)
 	}
 }
 
@@ -472,9 +504,10 @@ func TestMessages_UpstreamMalformedJSON(t *testing.T) {
 	s.mu.Unlock()
 	srv, _ := newTestServer(t, s)
 	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", rec.Code)
+	resp := doPOST(t, srv, "/v1/messages", body)
+	bodyOf(t, resp) // drain
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", resp.StatusCode)
 	}
 }
 
@@ -484,9 +517,10 @@ func TestMessages_StopSequencesCapped(t *testing.T) {
 	srv, logBuf := newTestServer(t, s)
 
 	body := `{"model":"x","max_tokens":1,"stop_sequences":["a","b","c","d","e","f"],"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
 	}
 	if !strings.Contains(logBuf.String(), `"stop_sequences truncated"`) {
 		t.Errorf("warn log not emitted: %s", logBuf.String())
@@ -502,9 +536,10 @@ func TestMessages_ModelRewriteLogged(t *testing.T) {
 	srv, logBuf := newTestServer(t, s)
 
 	body := `{"model":"claude-3-opus","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
 	}
 	if !strings.Contains(logBuf.String(), `"model rewritten"`) {
 		t.Errorf("model rewrite not logged: %s", logBuf.String())
@@ -526,9 +561,10 @@ func TestMessages_NoRewriteLogWhenIdentical(t *testing.T) {
 	srv, logBuf := newTestServer(t, s)
 
 	body := `{"model":"stub-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
 	}
 	if strings.Contains(logBuf.String(), `"model rewritten"`) {
 		t.Errorf("rewrite log should not fire when names match: %s", logBuf.String())
@@ -541,12 +577,13 @@ func TestCountTokens(t *testing.T) {
 	srv, _ := newTestServer(t, s)
 
 	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hello world from shim"}]}`
-	rec := doPOST(srv, "/v1/messages/count_tokens", body)
-	if rec.Code != 200 {
-		t.Errorf("status = %d, body = %s", rec.Code, rec.Body.String())
+	resp := doPOST(t, srv, "/v1/messages/count_tokens", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, body = %s", resp.StatusCode, respBody)
 	}
 	var out map[string]int
-	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	_ = json.Unmarshal([]byte(respBody), &out)
 	if out["input_tokens"] < 1 {
 		t.Errorf("input_tokens = %d, want > 0", out["input_tokens"])
 	}
