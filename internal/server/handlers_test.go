@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -1005,6 +1006,32 @@ func TestNew_UnknownAdapter(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(logBuf, nil))
 	if _, err := New(cfg, log); err == nil {
 		t.Fatal("expected error for unknown adapter")
+	}
+}
+
+// TestNew_HTTPClientTuning: fences the Stage 2 transport-tuning values so
+// regressions (or future "let's simplify the client" cleanups) surface as
+// failed tests rather than silent perf drift.
+func TestNew_HTTPClientTuning(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, _ := newTestServer(t, s)
+
+	transport, ok := srv.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("server client Transport is not *http.Transport: %T", srv.client.Transport)
+	}
+	if transport.MaxIdleConnsPerHost != 10 {
+		t.Errorf("MaxIdleConnsPerHost = %d, want 10", transport.MaxIdleConnsPerHost)
+	}
+	if !transport.ForceAttemptHTTP2 {
+		t.Error("ForceAttemptHTTP2 = false, want true")
+	}
+	if transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion < tls.VersionTLS12 {
+		t.Errorf("TLSClientConfig.MinVersion = %v, want >= TLS12", transport.TLSClientConfig)
+	}
+	if transport.ResponseHeaderTimeout != 30*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %v, want 30s", transport.ResponseHeaderTimeout)
 	}
 }
 

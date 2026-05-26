@@ -17,10 +17,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/1mb-dev/shim/internal/adapter"
 )
@@ -50,7 +48,6 @@ type impl struct {
 	opusModel     string // UPSTREAM_OPUS_MODEL; empty = DefaultOpusModel
 	sonnetModel   string // UPSTREAM_SONNET_MODEL; empty = DefaultSonnetModel
 	haikuModel    string // UPSTREAM_HAIKU_MODEL; empty = DefaultHaikuModel
-	client        *http.Client
 }
 
 // ConfigureOpts holds New parameters as a struct so signature changes
@@ -81,7 +78,6 @@ func New(opts ConfigureOpts) (adapter.Adapter, error) {
 		opusModel:     opts.OpusModel,
 		sonnetModel:   opts.SonnetModel,
 		haikuModel:    opts.HaikuModel,
-		client:        newClient(),
 	}
 	return a, nil
 }
@@ -147,7 +143,7 @@ func (a *impl) MapModel(model string) string {
 // requests. Called once at server startup; non-nil error blocks startup.
 func (a *impl) Validate() error {
 	if a.baseURL == "" {
-		return fmt.Errorf("deepseek: not configured (call Configure first)")
+		return fmt.Errorf("deepseek: not configured (call New first)")
 	}
 	if a.apiKey == "" {
 		return fmt.Errorf("deepseek: UPSTREAM_API_KEY not set")
@@ -157,7 +153,7 @@ func (a *impl) Validate() error {
 
 func (a *impl) BuildRequest(ctx context.Context, body []byte) (*http.Request, error) {
 	if a.baseURL == "" {
-		return nil, fmt.Errorf("deepseek: not configured (call Configure first)")
+		return nil, fmt.Errorf("deepseek: not configured (call New first)")
 	}
 	if a.apiKey == "" {
 		return nil, fmt.Errorf("deepseek: UPSTREAM_API_KEY not set")
@@ -189,30 +185,3 @@ func (a *impl) NormalizeResponse(resp *http.Response) ([]byte, error) {
 	}
 	return body, nil
 }
-
-// newClient builds the HTTP client with split timeouts so a slow TCP
-// handshake or slow header response can't pin a goroutine for the whole
-// 60-second client timeout. Used by New for the per-adapter http.Client
-// the clientProvider interface still exposes (step 5 removes both).
-func newClient() *http.Client {
-	transport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		MaxIdleConns:          10,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-	return &http.Client{
-		Timeout:   60 * time.Second,
-		Transport: transport,
-	}
-}
-
-// Client lets the server pick up the adapter's tuned HTTP client via the
-// clientProvider optional interface in internal/server. Step 5 deletes
-// both this method and the interface.
-func (a *impl) Client() *http.Client { return a.client }

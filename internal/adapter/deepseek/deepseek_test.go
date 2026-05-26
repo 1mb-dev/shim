@@ -12,13 +12,11 @@ import (
 	"testing"
 )
 
-// testAdapter returns a freshly-configured impl for isolation, leaving the
-// global singleton untouched.
+// testAdapter returns a freshly-built impl for isolated unit tests.
 func testAdapter(baseURL, apiKey string) *impl {
 	return &impl{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
-		client:  newClient(),
 	}
 }
 
@@ -33,7 +31,6 @@ func testAdapterRoles(baseURL, apiKey, modelOverride, opus, sonnet, haiku string
 		opusModel:     opus,
 		sonnetModel:   sonnet,
 		haikuModel:    haiku,
-		client:        newClient(),
 	}
 }
 
@@ -163,7 +160,7 @@ func TestValidate(t *testing.T) {
 }
 
 func TestBuildRequest_NotConfigured(t *testing.T) {
-	a := &impl{client: newClient()} // empty baseURL
+	a := &impl{} // empty baseURL
 	if _, err := a.BuildRequest(context.Background(), []byte(`{}`)); err == nil {
 		t.Fatal("expected error for unconfigured adapter")
 	}
@@ -247,7 +244,7 @@ func TestHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := a.client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
