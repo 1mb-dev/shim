@@ -26,4 +26,8 @@ Initial cut. Single static Go binary, zero runtime dependencies.
 ### Known limitations (tracked for Stage 1)
 - Streaming is buffer-then-restream, not true per-token SSE pass-through.
 - Server uses `http.DefaultClient`; the DeepSeek adapter's tuned client is not yet routed through the Adapter interface.
-- Token counting is `chars/4` approximation; exact tokenizer (cl100k_base) lands at the measurement-stage boundary.
+- Token counting is `chars/4` approximation; exact tokenizer lands at the measurement-stage boundary.
+- Model mapping collapses every requested model name to the adapter's configured upstream (logged when names differ).
+- `preflightAdapter` substring-matches on the adapter's error string to detect missing config — leaky Adapter interface contract; needs `Adapter.Validate() error` in Stage 1.
+- 70s server `WriteTimeout` caps any single response wall-clock (including streams); 60s upstream `Client.Timeout` leaves thin headroom for long completions.
+- `stop_sequences` capped at 4 per OpenAI's contract; over-cap requests are truncated with a `warn` log line.

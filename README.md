@@ -18,8 +18,9 @@ silently misbehaving.
 - `POST /v1/messages` — Anthropic Messages API. Non-streaming AND streaming (`{"stream": true}` returns the canonical Anthropic SSE event sequence: `message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` → `message_delta` → `message_stop`).
 - `POST /v1/messages/count_tokens` — approximate token count (see [Measurement](#measurement)).
 - `GET /health` — `{"status":"ok"}`.
-- Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences`, `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
+- Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences` (capped at 4 per OpenAI's limit; over-cap requests are truncated and a `warn` log line emitted), `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
 - One adapter: **DeepSeek** (`https://api.deepseek.com/v1`).
+- Model mapping: the requested `model` value is replaced with the adapter's upstream model (Stage 0 DeepSeek = `deepseek-chat`, override via `UPSTREAM_MODEL`). When the names differ, an `info` log line records both. shim is not a model router — the client picks the adapter, the adapter picks the model.
 - `shim run [args...]` launcher: locates `claude` on PATH, injects `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY=shim`, execs it, propagates exit code. Tested end-to-end with `claude --bare -p`.
 - Redacted-by-default JSON logs via `log/slog`. `Authorization`, prompt/message content, URL query strings, and credential-shaped keys are scrubbed at log-write time.
 - Cross-compiled binaries: `darwin/arm64`, `linux/amd64`, `linux/arm64`.
@@ -75,7 +76,7 @@ shim has **no built-in authentication.** It trusts the network boundary
 between itself and the client. Defaults assume one user, one machine:
 `BIND_ADDR=127.0.0.1` is loopback-only, and the inbound `Authorization`
 header is discarded (shim authenticates upstream with `UPSTREAM_API_KEY`
-from `.env`).
+from `.env`). No inbound rate-limiting, per-route auth, or quota tracking.
 
 If you bind to a non-loopback address, anyone on that network can route
 through shim, burning your upstream quota and exposing prompt content.
@@ -84,6 +85,25 @@ Don't do it without an authenticating reverse proxy in front.
 Logs scrub `Authorization`, prompt/message content, URL query strings,
 and credential-shaped keys by default (`LOG_REDACT=true`). Set
 `LOG_REDACT=false` only for local debugging.
+
+## Operational limits
+
+Hardcoded in Stage 0 (not env-configurable):
+
+| Limit | Value | Source |
+|---|---|---|
+| `ReadHeaderTimeout` | 10s | `internal/server/server.go` |
+| `WriteTimeout` | 70s | `internal/server/server.go` — caps streaming wall-clock |
+| `IdleTimeout` | 120s | `internal/server/server.go` |
+| `MaxHeaderBytes` | 1 MiB | `internal/server/server.go` |
+| Upstream `Client.Timeout` | 60s | `internal/adapter/deepseek/deepseek.go` |
+| Upstream `TLSHandshakeTimeout` | 10s | `internal/adapter/deepseek/deepseek.go` |
+| Upstream `ResponseHeaderTimeout` | 30s | `internal/adapter/deepseek/deepseek.go` |
+
+The 70s server `WriteTimeout` is the hard upper bound on any single
+response (streaming or non-streaming). Long completions that need more
+than ~60s upstream will be truncated mid-emit; the headroom over
+`Client.Timeout` is thin by design.
 
 ## Run
 
@@ -112,9 +132,8 @@ The launcher prints a single breadcrumb line to stderr (`shim run → claude=/pa
 The Stage 0 `count_tokens` endpoint and the `usage` field on responses use
 an **approximation** — `len(text) / 4` per the OpenAI tokenizer guidance.
 This is sufficient for in-session sanity checks but is **not** a substitute
-for a real tokenizer when calculating bills. The exact tokenizer (cl100k_base
-via `pkoukk/tiktoken-go`) lands at the measurement-stage boundary, not in
-Stage 0.
+for a real tokenizer when calculating bills. An exact tokenizer is planned
+at the measurement-stage boundary; the specific library is not yet chosen.
 
 Response usage shape (Anthropic Messages contract):
 
