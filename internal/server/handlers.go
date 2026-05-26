@@ -45,10 +45,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 }
 
 // logModelRewrite emits a breadcrumb when the adapter rewrites the
-// requested model name + records the rewrite event for /v1/metrics. Stage
-// 0 thesis-2: never silently forward modified traffic.
+// requested model name + records the rewrite event for /v1/metrics.
+// Thesis-2: never silently forward modified traffic. Empty requested →
+// non-empty resolved (i.e., client sent no model, shim picked one) IS a
+// rewrite — substitution happened, it deserves the breadcrumb.
 func (s *Server) logModelRewrite(requested, resolved string) {
-	if requested == "" || requested == resolved {
+	if requested == resolved {
 		return
 	}
 	s.log.Info("model rewritten",
@@ -60,18 +62,64 @@ func (s *Server) logModelRewrite(requested, resolved string) {
 }
 
 // approxInputTokens returns shim's chars/4 approximation of the request's
-// input prompt — system blocks + every message's content, space-joined.
-// Used both by /v1/messages/count_tokens (user-facing) and by the
+// input prompt — extracts text from system + message content blocks, then
+// applies the chars/4 heuristic. Used by /v1/messages/count_tokens and the
 // measurement collector (delta vs. upstream prompt_tokens).
+//
+// Naive stringification of json.RawMessage would count brackets/quotes/keys
+// as if they were prompt characters, structurally inflating shim_total by
+// ~10× for content-block requests. extractText unmarshals the actual text
+// fields. Tool-call argument JSON is currently NOT counted (avoiding the
+// same syntax-byte problem); known under-count for tool-heavy requests.
 func approxInputTokens(req *translate.AnthropicRequest) int {
-	var parts []string
-	if len(req.System) > 0 {
-		parts = append(parts, string(req.System))
+	var sb strings.Builder
+	if s, ok := extractText(req.System); ok {
+		sb.WriteString(s)
 	}
 	for _, m := range req.Messages {
-		parts = append(parts, string(m.Content))
+		if s, ok := extractText(m.Content); ok {
+			if sb.Len() > 0 {
+				sb.WriteByte(' ')
+			}
+			sb.WriteString(s)
+		}
 	}
-	return tokens.Approximate(strings.Join(parts, " "))
+	return tokens.Approximate(sb.String())
+}
+
+// extractText pulls prompt text out of a json.RawMessage that may be a
+// JSON string ("text") or an array of content blocks
+// ([{"type":"text","text":"..."}, ...]). Returns ("", false) for null or
+// unparseable input. Non-text blocks (image, tool_use, tool_result) are
+// skipped — their JSON bodies would otherwise count brackets and keys.
+func extractText(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", false
+	}
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return "", false
+		}
+		return s, true
+	}
+	if raw[0] == '[' {
+		var blocks []translate.AnthropicBlock
+		if err := json.Unmarshal(raw, &blocks); err != nil {
+			return "", false
+		}
+		var sb strings.Builder
+		for _, b := range blocks {
+			if b.Type == "text" {
+				if sb.Len() > 0 {
+					sb.WriteByte(' ')
+				}
+				sb.WriteString(b.Text)
+			}
+		}
+		return sb.String(), true
+	}
+	return "", false
 }
 
 // handleMessages — POST /v1/messages.
@@ -98,8 +146,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if containsThinkingBlock(req.Messages) {
+		writeError(w, s.log, http.StatusNotImplemented, errInvalidRequest,
+			"extended thinking not yet supported")
+		return
+	}
+
 	// OpenAI-compatible upstreams reject stop arrays larger than 4 with a
-	// 400 that looks like a shim bug; cap loudly per thesis-2.
+	// 400 that looks like a shim bug; cap loudly per thesis-2. Run AFTER
+	// the thinking-block gate so a request rejected at 501 doesn't leave a
+	// rewrite counter increment that never reached the wire.
 	if n := len(req.StopSequences); n > maxStopSequences {
 		s.log.Warn("stop_sequences truncated",
 			slog.Int("from", n),
@@ -107,12 +163,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		)
 		req.StopSequences = req.StopSequences[:maxStopSequences]
 		s.measure.RecordRewriteEvent(measure.RewriteStopSequences)
-	}
-
-	if containsThinkingBlock(req.Messages) {
-		writeError(w, s.log, http.StatusNotImplemented, errInvalidRequest,
-			"extended thinking not yet supported")
-		return
 	}
 
 	if req.Stream {

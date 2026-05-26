@@ -555,6 +555,131 @@ func TestMessages_ModelRewriteLogged(t *testing.T) {
 	}
 }
 
+// TestMessages_EmptyModelLogsRewrite: when client sends model="" and shim
+// substitutes a default, that IS a rewrite — must log + increment counter.
+// Closes the logModelRewrite empty-input thesis-2 violation from
+// /code-review 2026-05-26.
+func TestMessages_EmptyModelLogsRewrite(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, logBuf := newTestServer(t, s)
+
+	body := `{"model":"","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
+	}
+	if !strings.Contains(logBuf.String(), `"model rewritten"`) {
+		t.Errorf("empty input + substitution should log: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), `"requested":""`) {
+		t.Errorf("rewrite log missing empty-requested key: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), `"resolved":"stub-model"`) {
+		t.Errorf("rewrite log missing resolved key: %s", logBuf.String())
+	}
+}
+
+// TestApproxInputTokens_ExtractsText: shim's chars/4 approximation must
+// count actual prompt text, not the JSON syntax bytes of json.RawMessage.
+// Closes the structural-inflation finding from /code-review 2026-05-26.
+func TestApproxInputTokens_ExtractsText(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		// Approximation must NOT match the JSON-bytes-counted value (which
+		// would be ~7+ tokens for a 2-char prompt). We assert an upper
+		// bound that catches the JSON-byte-counting regression.
+		maxTokens int
+	}{
+		{
+			name:      "string content 'hi'",
+			body:      `{"model":"x","messages":[{"role":"user","content":"hi"}]}`,
+			maxTokens: 1, // 'hi' = 2 chars → chars/4 → 1
+		},
+		{
+			name:      "block-array content 'hi'",
+			body:      `{"model":"x","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+			maxTokens: 1, // must NOT count the bracket/key/quote bytes
+		},
+		{
+			name:      "system block + user 'hi'",
+			body:      `{"model":"x","system":"You are helpful.","messages":[{"role":"user","content":"hi"}]}`,
+			maxTokens: 5, // 'You are helpful. hi' = 19 chars → 4
+		},
+		{
+			name:      "explicit null system + 'hi'",
+			body:      `{"model":"x","system":null,"messages":[{"role":"user","content":"hi"}]}`,
+			maxTokens: 1, // null must be skipped, not counted as 4 chars
+		},
+		{
+			name:      "image block + text 'hi' — image skipped",
+			body:      `{"model":"x","messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://example.com/big.png"}},{"type":"text","text":"hi"}]}]}`,
+			maxTokens: 1, // image URL bytes must not count
+		},
+		{
+			name:      "non-string non-array content (number) — silently ignored",
+			body:      `{"model":"x","messages":[{"role":"user","content":42}]}`,
+			maxTokens: 0, // extractText returns ("", false) → no contribution
+		},
+		{
+			name:      "array of wrong shape — extractText unmarshal-fails, returns 0",
+			body:      `{"model":"x","messages":[{"role":"user","content":[1,2,3]}]}`,
+			maxTokens: 0, // [1,2,3] is valid JSON but not []AnthropicBlock → graceful skip
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStub()
+			defer s.close()
+			srv, _ := newTestServer(t, s)
+
+			resp := doPOST(t, srv, "/v1/messages/count_tokens", tc.body)
+			respBody := bodyOf(t, resp)
+			if resp.StatusCode != 200 {
+				t.Fatalf("status = %d, body = %s", resp.StatusCode, respBody)
+			}
+			var out map[string]int
+			if err := json.Unmarshal([]byte(respBody), &out); err != nil {
+				t.Fatal(err)
+			}
+			if out["input_tokens"] > tc.maxTokens {
+				t.Errorf("input_tokens = %d exceeds maxTokens %d — JSON syntax bytes leaking into count? body: %s", out["input_tokens"], tc.maxTokens, respBody)
+			}
+		})
+	}
+}
+
+// TestMessages_ThinkingPreventsStopSequencesCounter: stop_sequences cap +
+// counter must NOT fire when the request is rejected at the thinking-block
+// gate. Closes the ordering finding from /code-review 2026-05-26.
+func TestMessages_ThinkingPreventsStopSequencesCounter(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, _ := newTestServer(t, s)
+
+	// 6 stop_sequences (over cap) + a thinking block → should 501 with
+	// NO rewrites.stop_sequences increment.
+	body := `{"model":"x","max_tokens":1,"stop_sequences":["a","b","c","d","e","f"],"messages":[{"role":"assistant","content":[{"type":"thinking","text":"hmm"}]}]}`
+	resp := doPOST(t, srv, "/v1/messages", body)
+	bodyOf(t, resp)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", resp.StatusCode)
+	}
+
+	// Inspect /v1/metrics — rewrites.stop_sequences must be zero.
+	metricsResp := doGET(t, srv, "/v1/metrics")
+	metricsBody := bodyOf(t, metricsResp)
+	var snap measure.Snapshot
+	if err := json.Unmarshal([]byte(metricsBody), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.Rewrites[measure.RewriteStopSequences]; got != 0 {
+		t.Errorf("rewrites.stop_sequences = %d after thinking-rejected request, want 0", got)
+	}
+}
+
 // TestMessages_NoRewriteLogWhenIdentical: when client sends the model name
 // the adapter happens to resolve to, no rewrite line — keeps the log honest
 // rather than noisy.
