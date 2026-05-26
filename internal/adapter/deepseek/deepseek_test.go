@@ -72,6 +72,35 @@ func TestBuildRequest(t *testing.T) {
 	}
 }
 
+func TestValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		apiKey  string
+		wantSub string // "" = expect nil
+	}{
+		{"valid", "https://api.deepseek.com/v1", "sk-test", ""},
+		{"missing baseURL", "", "sk-test", "not configured"},
+		{"missing apiKey", "https://api.deepseek.com/v1", "", "UPSTREAM_API_KEY"},
+		{"both missing — baseURL check wins", "", "", "not configured"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testAdapter(tc.baseURL, tc.apiKey)
+			err := a.Validate()
+			if tc.wantSub == "" {
+				if err != nil {
+					t.Errorf("got %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("got %v, want substring %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
 func TestBuildRequest_NotConfigured(t *testing.T) {
 	a := &impl{client: newClient()} // empty baseURL
 	if _, err := a.BuildRequest(context.Background(), []byte(`{}`)); err == nil {

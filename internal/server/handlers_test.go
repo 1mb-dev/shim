@@ -57,10 +57,13 @@ func (s *stub) DefaultModel() string { return "stub-model" }
 func (s *stub) MapModel(string) string {
 	return s.DefaultModel()
 }
-func (s *stub) BuildRequest(ctx context.Context, body []byte) (*http.Request, error) {
+func (s *stub) Validate() error {
 	if s.missingKey {
-		return nil, errKeyMissing
+		return errKeyMissing
 	}
+	return nil
+}
+func (s *stub) BuildRequest(ctx context.Context, body []byte) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.upstream.URL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -361,19 +364,29 @@ func TestMessages_Malformed(t *testing.T) {
 	}
 }
 
-func TestMessages_MissingAPIKey(t *testing.T) {
+// TestNew_AdapterValidateFails: with Validate() at startup, a misconfigured
+// adapter blocks Server construction. The 401 surface moves from per-request
+// to fail-loud-on-boot.
+func TestNew_AdapterValidateFails(t *testing.T) {
 	s := newStub()
 	s.missingKey = true
 	defer s.close()
-	srv, _ := newTestServer(t, s)
-
-	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
-	rec := doPOST(srv, "/v1/messages", body)
-	if rec.Code != 401 {
-		t.Errorf("status = %d, want 401", rec.Code)
+	adapter.Register(s)
+	logBuf := &bytes.Buffer{}
+	log := slog.New(slog.NewJSONHandler(logBuf, nil))
+	cfg := &config.Config{
+		BindAddr:        "127.0.0.1",
+		Port:            0,
+		Adapter:         s.name,
+		UpstreamAPIKey:  "",
+		MaxRequestBytes: 4096,
 	}
-	if !strings.Contains(rec.Body.String(), "UPSTREAM_API_KEY") {
-		t.Errorf("body should mention UPSTREAM_API_KEY: %s", rec.Body.String())
+	_, err := New(cfg, log)
+	if err == nil {
+		t.Fatal("expected error from New when adapter fails Validate, got nil")
+	}
+	if !strings.Contains(err.Error(), "UPSTREAM_API_KEY") {
+		t.Errorf("error should surface adapter's reason, got: %v", err)
 	}
 }
 

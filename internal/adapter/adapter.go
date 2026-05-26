@@ -35,6 +35,12 @@ type Adapter interface {
 	// "claude-3-5-sonnet-20240620") into the upstream's expected name.
 	MapModel(anthropicModel string) string
 
+	// Validate confirms the adapter has all configuration it needs to serve
+	// requests. Called once at server startup; non-nil error blocks startup.
+	// Replaces the prior substring-match preflight backchannel on the
+	// request path.
+	Validate() error
+
 	// BuildRequest takes an already-translated OpenAI ChatCompletions body
 	// and returns an http.Request bound to {BaseURL}/chat/completions with
 	// auth headers set. Adapter must call req.WithContext(ctx).

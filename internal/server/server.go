@@ -33,10 +33,16 @@ type Server struct {
 
 // New constructs a Server. The adapter must already be registered (via the
 // blank import of its package) and configured (e.g. via deepseek.Configure).
+// Adapter.Validate() runs once here; misconfiguration fails startup loudly
+// rather than the first request.
 func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	a, ok := adapter.Get(cfg.Adapter)
 	if !ok {
 		return nil, fmt.Errorf("adapter %q not registered (available: %v)", cfg.Adapter, adapter.Names())
+	}
+
+	if err := a.Validate(); err != nil {
+		return nil, fmt.Errorf("adapter %q validation failed: %w", cfg.Adapter, err)
 	}
 
 	client := http.DefaultClient

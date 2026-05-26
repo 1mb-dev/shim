@@ -68,6 +68,18 @@ func (a *impl) MapModel(_ string) string {
 	return a.DefaultModel()
 }
 
+// Validate confirms the adapter has the configuration it needs to serve
+// requests. Called once at server startup; non-nil error blocks startup.
+func (a *impl) Validate() error {
+	if a.baseURL == "" {
+		return fmt.Errorf("deepseek: not configured (call Configure first)")
+	}
+	if a.apiKey == "" {
+		return fmt.Errorf("deepseek: UPSTREAM_API_KEY not set")
+	}
+	return nil
+}
+
 func (a *impl) BuildRequest(ctx context.Context, body []byte) (*http.Request, error) {
 	if a.baseURL == "" {
 		return nil, fmt.Errorf("deepseek: not configured (call Configure first)")

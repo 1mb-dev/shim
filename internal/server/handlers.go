@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -73,12 +72,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	if containsThinkingBlock(req.Messages) {
 		writeError(w, s.log, http.StatusNotImplemented, errInvalidRequest,
 			"extended thinking not yet supported")
-		return
-	}
-
-	// Adapter checks before doing work.
-	if err := s.preflightAdapter(r.Context()); err != nil {
-		writeError(w, s.log, http.StatusUnauthorized, errAuthentication, err.Error())
 		return
 	}
 
@@ -201,21 +194,6 @@ func (s *Server) readBody(r *http.Request, w http.ResponseWriter) ([]byte, error
 		return nil, err
 	}
 	return body, nil
-}
-
-// preflightAdapter checks the configured adapter has its key. We don't dive
-// inside the adapter struct — we attempt a no-op BuildRequest with empty
-// body and surface the resulting error if the adapter complains about
-// missing config. ctx is the inbound request context so client cancellation
-// reaches the preflight path; the substring-match backchannel is a known
-// interface-design debt tracked for Stage 1.
-func (s *Server) preflightAdapter(ctx context.Context) error {
-	if _, err := s.adapter.BuildRequest(ctx, []byte(`{}`)); err != nil {
-		if strings.Contains(err.Error(), "API_KEY") || strings.Contains(err.Error(), "not configured") {
-			return err
-		}
-	}
-	return nil
 }
 
 // writeUpstreamError translates a non-2xx upstream response into the right
