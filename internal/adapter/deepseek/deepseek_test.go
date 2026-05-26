@@ -305,16 +305,17 @@ func TestFixtureSchema(t *testing.T) {
 	}
 }
 
-func TestConfigure(t *testing.T) {
-	// Snapshot and restore the singleton so we don't pollute other tests.
-	saved := *instance
-	defer func() { *instance = saved }()
-
-	Configure(ConfigureOpts{APIKey: "sk-cfg"})
-	if instance.baseURL != DefaultBaseURL {
-		t.Errorf("empty baseURL should default, got %q", instance.baseURL)
+func TestNew(t *testing.T) {
+	a, err := New(ConfigureOpts{APIKey: "sk-cfg"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
-	Configure(ConfigureOpts{
+	got := a.(*impl)
+	if got.baseURL != DefaultBaseURL {
+		t.Errorf("empty baseURL should default, got %q", got.baseURL)
+	}
+
+	a, err = New(ConfigureOpts{
 		BaseURL:       "https://x/v1/",
 		APIKey:        "sk-cfg",
 		ModelOverride: "deepseek-reasoner",
@@ -322,20 +323,37 @@ func TestConfigure(t *testing.T) {
 		SonnetModel:   "custom-sonnet",
 		HaikuModel:    "custom-haiku",
 	})
-	if instance.baseURL != "https://x/v1" {
-		t.Errorf("trailing slash not trimmed: %q", instance.baseURL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
-	if instance.DefaultModel() != "deepseek-reasoner" {
-		t.Errorf("override lost: %q", instance.DefaultModel())
+	got = a.(*impl)
+	if got.baseURL != "https://x/v1" {
+		t.Errorf("trailing slash not trimmed: %q", got.baseURL)
 	}
-	if instance.opusModel != "custom-opus" {
-		t.Errorf("opusModel = %q, want custom-opus", instance.opusModel)
+	if got.DefaultModel() != "deepseek-reasoner" {
+		t.Errorf("override lost: %q", got.DefaultModel())
 	}
-	if instance.sonnetModel != "custom-sonnet" {
-		t.Errorf("sonnetModel = %q, want custom-sonnet", instance.sonnetModel)
+	if got.opusModel != "custom-opus" {
+		t.Errorf("opusModel = %q, want custom-opus", got.opusModel)
 	}
-	if instance.haikuModel != "custom-haiku" {
-		t.Errorf("haikuModel = %q, want custom-haiku", instance.haikuModel)
+	if got.sonnetModel != "custom-sonnet" {
+		t.Errorf("sonnetModel = %q, want custom-sonnet", got.sonnetModel)
+	}
+	if got.haikuModel != "custom-haiku" {
+		t.Errorf("haikuModel = %q, want custom-haiku", got.haikuModel)
+	}
+}
+
+// TestNew_FreshInstance: each call to New returns a distinct instance so
+// tests (and any future multi-tenant use) don't share state.
+func TestNew_FreshInstance(t *testing.T) {
+	a1, _ := New(ConfigureOpts{APIKey: "k1"})
+	a2, _ := New(ConfigureOpts{APIKey: "k2"})
+	if a1.(*impl) == a2.(*impl) {
+		t.Error("New returned the same pointer twice — singleton leak")
+	}
+	if a1.(*impl).apiKey == a2.(*impl).apiKey {
+		t.Errorf("instances share apiKey: %q == %q", a1.(*impl).apiKey, a2.(*impl).apiKey)
 	}
 }
 

@@ -1,10 +1,15 @@
-// Package deepseek implements the Stage 0 Adapter against DeepSeek's
+// Package deepseek implements the Adapter against DeepSeek's
 // OpenAI-compatible chat-completions API. DeepSeek hugs the OpenAI contract
 // tightly, so NormalizeResponse is a pass-through.
 //
-// Usage: blank-import this package from cmd/shim/main.go to trigger
-// registration, then call deepseek.Configure(cfg) before starting the
-// server.
+// Usage: import this package from cmd/shim/main.go and call
+//
+//	a, err := deepseek.New(opts)
+//	adapter.Register(a)
+//
+// before constructing the server. Each call to New returns a fresh
+// instance, so tests can build isolated adapters without touching package
+// state.
 package deepseek
 
 import (
@@ -38,11 +43,6 @@ const (
 	DefaultHaikuModel = "deepseek-v4-flash"
 )
 
-// instance is the singleton registered at init(). State is filled in by
-// Configure before the server starts; subsequent reads from the request
-// path are race-free because no further mutations occur.
-var instance = &impl{client: newClient()}
-
 type impl struct {
 	baseURL       string
 	apiKey        string
@@ -53,7 +53,7 @@ type impl struct {
 	client        *http.Client
 }
 
-// ConfigureOpts holds Configure parameters as a struct so signature changes
+// ConfigureOpts holds New parameters as a struct so signature changes
 // don't ripple to every call site.
 type ConfigureOpts struct {
 	BaseURL       string
@@ -64,19 +64,26 @@ type ConfigureOpts struct {
 	HaikuModel    string
 }
 
-// Configure injects runtime configuration into the registered adapter. Call
-// exactly once before starting the server.
-func Configure(opts ConfigureOpts) {
+// New constructs a configured DeepSeek adapter. Caller must register the
+// returned adapter via adapter.Register before the server reads it. The
+// error return is reserved for future construction-time validation; today
+// it is always nil and the actual config gate is Adapter.Validate at
+// server startup.
+func New(opts ConfigureOpts) (adapter.Adapter, error) {
 	baseURL := opts.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	instance.baseURL = strings.TrimRight(baseURL, "/")
-	instance.apiKey = opts.APIKey
-	instance.modelOverride = opts.ModelOverride
-	instance.opusModel = opts.OpusModel
-	instance.sonnetModel = opts.SonnetModel
-	instance.haikuModel = opts.HaikuModel
+	a := &impl{
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		apiKey:        opts.APIKey,
+		modelOverride: opts.ModelOverride,
+		opusModel:     opts.OpusModel,
+		sonnetModel:   opts.SonnetModel,
+		haikuModel:    opts.HaikuModel,
+		client:        newClient(),
+	}
+	return a, nil
 }
 
 func (a *impl) Name() string { return Name }
@@ -183,14 +190,10 @@ func (a *impl) NormalizeResponse(resp *http.Response) ([]byte, error) {
 	return body, nil
 }
 
-// Client exposes the configured HTTP client so the server can call
-// Adapter.BuildRequest then run the request itself. Returned for the
-// configured singleton.
-func Client() *http.Client { return instance.client }
-
 // newClient builds the HTTP client with split timeouts so a slow TCP
 // handshake or slow header response can't pin a goroutine for the whole
-// 60-second client timeout.
+// 60-second client timeout. Used by New for the per-adapter http.Client
+// the clientProvider interface still exposes (step 5 removes both).
 func newClient() *http.Client {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
@@ -209,6 +212,7 @@ func newClient() *http.Client {
 	}
 }
 
-func init() {
-	adapter.Register(instance)
-}
+// Client lets the server pick up the adapter's tuned HTTP client via the
+// clientProvider optional interface in internal/server. Step 5 deletes
+// both this method and the interface.
+func (a *impl) Client() *http.Client { return a.client }

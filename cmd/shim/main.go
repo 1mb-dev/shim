@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	// Adapter registration via init().
+	"github.com/1mb-dev/shim/internal/adapter"
 	"github.com/1mb-dev/shim/internal/adapter/deepseek"
 	"github.com/1mb-dev/shim/internal/config"
 	"github.com/1mb-dev/shim/internal/launcher"
@@ -65,7 +65,7 @@ func runServer() error {
 	}
 
 	log := setupLogger(cfg)
-	deepseek.Configure(deepseek.ConfigureOpts{
+	a, err := deepseek.New(deepseek.ConfigureOpts{
 		BaseURL:       cfg.UpstreamBaseURL,
 		APIKey:        cfg.UpstreamAPIKey,
 		ModelOverride: cfg.UpstreamModel,
@@ -73,6 +73,10 @@ func runServer() error {
 		SonnetModel:   cfg.UpstreamSonnetModel,
 		HaikuModel:    cfg.UpstreamHaikuModel,
 	})
+	if err != nil {
+		return fmt.Errorf("deepseek adapter: %w", err)
+	}
+	adapter.Register(a)
 
 	srv, err := server.New(cfg, log)
 	if err != nil {
