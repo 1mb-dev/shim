@@ -19,10 +19,17 @@ type Config struct {
 	Adapter         string
 	UpstreamAPIKey  string
 	UpstreamBaseURL string
-	UpstreamModel   string // optional
-	LogLevel        string
-	LogRedact       bool
-	MaxRequestBytes int64
+	UpstreamModel   string // optional; catch-all for non-claude-* inputs
+	// Per-role overrides — empty means "use adapter default for this role."
+	// Claude Code sends claude-opus*/sonnet*/haiku* model names; the adapter
+	// maps those to upstream-specific models. These env vars override the
+	// adapter's per-role default.
+	UpstreamOpusModel   string
+	UpstreamSonnetModel string
+	UpstreamHaikuModel  string
+	LogLevel            string
+	LogRedact           bool
+	MaxRequestBytes     int64
 }
 
 var defaults = map[string]string{
@@ -63,15 +70,18 @@ func Load(envPath string) (*Config, error) {
 	}
 
 	return &Config{
-		BindAddr:        get("BIND_ADDR"),
-		Port:            port,
-		Adapter:         get("ADAPTER"),
-		UpstreamAPIKey:  os.Getenv("UPSTREAM_API_KEY"),
-		UpstreamBaseURL: get("UPSTREAM_BASE_URL"),
-		UpstreamModel:   os.Getenv("UPSTREAM_MODEL"),
-		LogLevel:        get("LOG_LEVEL"),
-		LogRedact:       redact,
-		MaxRequestBytes: maxBytes,
+		BindAddr:            get("BIND_ADDR"),
+		Port:                port,
+		Adapter:             get("ADAPTER"),
+		UpstreamAPIKey:      os.Getenv("UPSTREAM_API_KEY"),
+		UpstreamBaseURL:     get("UPSTREAM_BASE_URL"),
+		UpstreamModel:       os.Getenv("UPSTREAM_MODEL"),
+		UpstreamOpusModel:   os.Getenv("UPSTREAM_OPUS_MODEL"),
+		UpstreamSonnetModel: os.Getenv("UPSTREAM_SONNET_MODEL"),
+		UpstreamHaikuModel:  os.Getenv("UPSTREAM_HAIKU_MODEL"),
+		LogLevel:            get("LOG_LEVEL"),
+		LogRedact:           redact,
+		MaxRequestBytes:     maxBytes,
 	}, nil
 }
 

@@ -88,7 +88,7 @@ func TestLoadMissingRequired(t *testing.T) {
 
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv("UPSTREAM_API_KEY", "sk-test")
-	for _, k := range []string{"BIND_ADDR", "PORT", "ADAPTER", "UPSTREAM_BASE_URL", "LOG_LEVEL", "LOG_REDACT", "MAX_REQUEST_BYTES", "UPSTREAM_MODEL"} {
+	for _, k := range []string{"BIND_ADDR", "PORT", "ADAPTER", "UPSTREAM_BASE_URL", "LOG_LEVEL", "LOG_REDACT", "MAX_REQUEST_BYTES", "UPSTREAM_MODEL", "UPSTREAM_OPUS_MODEL", "UPSTREAM_SONNET_MODEL", "UPSTREAM_HAIKU_MODEL"} {
 		t.Setenv(k, "")
 	}
 	cfg, err := Load(filepath.Join(t.TempDir(), "nonexistent.env"))
@@ -96,27 +96,58 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatalf("unexpected: %v", err)
 	}
 	checks := map[string]any{
-		"BindAddr":        "127.0.0.1",
-		"Port":            8082,
-		"Adapter":         "deepseek",
-		"UpstreamBaseURL": "https://api.deepseek.com/v1",
-		"LogLevel":        "info",
-		"LogRedact":       true,
-		"MaxRequestBytes": int64(1048576),
+		"BindAddr":            "127.0.0.1",
+		"Port":                8082,
+		"Adapter":             "deepseek",
+		"UpstreamBaseURL":     "https://api.deepseek.com/v1",
+		"UpstreamModel":       "",
+		"UpstreamOpusModel":   "",
+		"UpstreamSonnetModel": "",
+		"UpstreamHaikuModel":  "",
+		"LogLevel":            "info",
+		"LogRedact":           true,
+		"MaxRequestBytes":     int64(1048576),
 	}
 	got := map[string]any{
-		"BindAddr":        cfg.BindAddr,
-		"Port":            cfg.Port,
-		"Adapter":         cfg.Adapter,
-		"UpstreamBaseURL": cfg.UpstreamBaseURL,
-		"LogLevel":        cfg.LogLevel,
-		"LogRedact":       cfg.LogRedact,
-		"MaxRequestBytes": cfg.MaxRequestBytes,
+		"BindAddr":            cfg.BindAddr,
+		"Port":                cfg.Port,
+		"Adapter":             cfg.Adapter,
+		"UpstreamBaseURL":     cfg.UpstreamBaseURL,
+		"UpstreamModel":       cfg.UpstreamModel,
+		"UpstreamOpusModel":   cfg.UpstreamOpusModel,
+		"UpstreamSonnetModel": cfg.UpstreamSonnetModel,
+		"UpstreamHaikuModel":  cfg.UpstreamHaikuModel,
+		"LogLevel":            cfg.LogLevel,
+		"LogRedact":           cfg.LogRedact,
+		"MaxRequestBytes":     cfg.MaxRequestBytes,
 	}
 	for k, want := range checks {
 		if got[k] != want {
 			t.Errorf("%s = %v, want %v", k, got[k], want)
 		}
+	}
+}
+
+// TestLoadPerRoleOverridesIndependent: setting only UPSTREAM_OPUS_MODEL must
+// not contaminate the sonnet/haiku fields. Each role is independent.
+func TestLoadPerRoleOverridesIndependent(t *testing.T) {
+	t.Setenv("UPSTREAM_API_KEY", "sk-test")
+	t.Setenv("UPSTREAM_OPUS_MODEL", "deepseek-v4-pro[1m]")
+	t.Setenv("UPSTREAM_SONNET_MODEL", "")
+	t.Setenv("UPSTREAM_HAIKU_MODEL", "")
+	t.Setenv("UPSTREAM_MODEL", "")
+	cfg, err := Load(filepath.Join(t.TempDir(), "nonexistent.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UpstreamOpusModel != "deepseek-v4-pro[1m]" {
+		t.Errorf("OpusModel = %q, want deepseek-v4-pro[1m]", cfg.UpstreamOpusModel)
+	}
+	if cfg.UpstreamSonnetModel != "" {
+		t.Errorf("SonnetModel leaked: %q", cfg.UpstreamSonnetModel)
+	}
+	if cfg.UpstreamHaikuModel != "" {
+		t.Errorf("HaikuModel leaked: %q", cfg.UpstreamHaikuModel)
 	}
 }
 
