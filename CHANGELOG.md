@@ -26,7 +26,7 @@ Four `/code-review` MED items folded in.
 - `deepseek.Configure(opts)` + the package-level `instance` singleton + `init()` registration. Use `deepseek.New(opts)` + `adapter.Register(a)` explicitly from `cmd/shim/main.go`.
 
 ### Binary size
-~6.5 MB increase from cl100k BPE tables (offline loader embeds all four encodings; shim only uses cl100k, but the others go along for the ride). darwin-arm64 / linux-arm64: 6.5 MB → ~13 MB. linux-amd64: 7.0 MB → ~14 MB. Still single-file static — T3 (drop-in binary) preserved.
+~7 MB increase from cl100k BPE tables (offline loader embeds all four encodings; shim only uses cl100k, but the others go along for the ride). All three cross-builds: 6.5–7.0 MB → 14 MB. Still single-file static — T3 (drop-in binary) preserved.
 
 ### Runtime dependencies
 First runtime deps in shim's history. Both fetched at `go build` and embedded; no network fetch or external tooling at startup:

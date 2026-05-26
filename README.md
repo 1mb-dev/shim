@@ -95,10 +95,10 @@ toolchain required at runtime):
 - [`github.com/pkoukk/tiktoken-go`](https://github.com/pkoukk/tiktoken-go) — BPE tokenizer for cl100k_base counting on `/v1/messages/count_tokens` and `/v1/metrics` `token_delta.shim_total`.
 - [`github.com/pkoukk/tiktoken-go-loader`](https://github.com/pkoukk/tiktoken-go-loader) — embeds BPE tables (cl100k + o200k + p50k + r50k) via `go:embed`. shim only uses cl100k; the other three add ~5MB of dead weight to the binary.
 
-Binary footprint as of Stage 2: ~13 MB per platform (darwin-arm64 /
-linux-arm64; linux-amd64 ~14 MB). Stage 0/1 binaries were ~6.5 MB; the
-tokenizer adds ~6.5 MB. The binary is still single-file static — bigger
-file, same drop-in story.
+Binary footprint as of Stage 2: ~14 MB per platform (darwin-arm64 /
+linux-amd64 / linux-arm64 all measured at 14 MB). Stage 0/1 binaries
+were ~6.5 MB (linux-amd64 7.0 MB); the tokenizer adds ~7 MB. The binary
+is still single-file static — bigger file, same drop-in story.
 
 ## Config
 
