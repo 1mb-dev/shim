@@ -30,6 +30,7 @@ type stub struct {
 	upstreamHandler http.HandlerFunc
 	upstream        *httptest.Server
 	missingKey      bool
+	buildErr        error // when non-nil, BuildRequest returns this without dialling upstream
 }
 
 var stubCounter int
@@ -65,6 +66,9 @@ func (s *stub) Validate() error {
 	return nil
 }
 func (s *stub) BuildRequest(ctx context.Context, body []byte) (*http.Request, error) {
+	if s.buildErr != nil {
+		return nil, s.buildErr
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.upstream.URL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -1029,6 +1033,33 @@ func TestNew_HTTPClientTuning(t *testing.T) {
 	}
 	if transport.ResponseHeaderTimeout != 30*time.Second {
 		t.Errorf("ResponseHeaderTimeout = %v, want 30s", transport.ResponseHeaderTimeout)
+	}
+}
+
+// TestMessages_BuildRequestConfigError: a per-request configuration error
+// from the adapter's BuildRequest (e.g. UPSTREAM_API_KEY rotated to empty
+// after server start) must surface as a 500 with the errAPI class — same
+// path the deleted TestMessages_MissingAPIKey used to fence at the now
+// startup-only Validate gate. Closes /code-review backlog MED-4 coverage
+// gap for the per-request config-error class.
+func TestMessages_BuildRequestConfigError(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	s.buildErr = errStr("UPSTREAM_API_KEY not set")
+	srv, _ := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	if !strings.Contains(respBody, "build upstream request") {
+		t.Errorf("body should explain build failure, got: %s", respBody)
+	}
+	if !strings.Contains(respBody, `"error"`) {
+		t.Errorf("body must be Anthropic-shaped error envelope: %s", respBody)
 	}
 }
 
