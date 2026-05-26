@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/1mb-dev/shim/internal/measure"
 	"github.com/1mb-dev/shim/internal/tokens"
 	"github.com/1mb-dev/shim/internal/translate"
 )
@@ -19,13 +21,15 @@ const maxStopSequences = 4
 
 // handleHealth — GET /health → {"status":"ok"}.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	start := time.Now()
+	defer func() { s.measure.RecordLatency("/health", time.Since(start)) }()
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
 // logModelRewrite emits a breadcrumb when the adapter rewrites the
-// requested model name. Stage 0 thesis-2: never silently forward modified
-// traffic.
+// requested model name + records the rewrite event for /v1/metrics. Stage
+// 0 thesis-2: never silently forward modified traffic.
 func (s *Server) logModelRewrite(requested, resolved string) {
 	if requested == "" || requested == resolved {
 		return
@@ -35,6 +39,22 @@ func (s *Server) logModelRewrite(requested, resolved string) {
 		slog.String("resolved", resolved),
 		slog.String("adapter", s.adapter.Name()),
 	)
+	s.measure.RecordRewriteEvent(measure.RewriteModel)
+}
+
+// approxInputTokens returns shim's chars/4 approximation of the request's
+// input prompt — system blocks + every message's content, space-joined.
+// Used both by /v1/messages/count_tokens (user-facing) and by the
+// measurement collector (delta vs. upstream prompt_tokens).
+func approxInputTokens(req *translate.AnthropicRequest) int {
+	var parts []string
+	if len(req.System) > 0 {
+		parts = append(parts, string(req.System))
+	}
+	for _, m := range req.Messages {
+		parts = append(parts, string(m.Content))
+	}
+	return tokens.Approximate(strings.Join(parts, " "))
 }
 
 // handleMessages — POST /v1/messages.
@@ -46,6 +66,8 @@ func (s *Server) logModelRewrite(requested, resolved string) {
 // Every loud-fail path emits an Anthropic-shaped error and logs the event
 // with redacted attrs.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { s.measure.RecordLatency("/v1/messages", time.Since(start)) }()
 	body, err := s.readBody(r, w)
 	if err != nil {
 		// readBody already wrote the response.
@@ -67,6 +89,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			slog.Int("to", maxStopSequences),
 		)
 		req.StopSequences = req.StopSequences[:maxStopSequences]
+		s.measure.RecordRewriteEvent(measure.RewriteStopSequences)
 	}
 
 	if containsThinkingBlock(req.Messages) {
@@ -123,6 +146,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.measure.RecordTokenDelta("/v1/messages",
+		approxInputTokens(&req),
+		openaiResp.Usage.PromptTokens,
+		openaiResp.Usage.CompletionTokens,
+	)
+
 	anthropicResp, err := translate.OpenAIToAnthropic(&openaiResp, req.Model)
 	if err != nil {
 		writeError(w, s.log, http.StatusInternalServerError, errAPI,
@@ -141,6 +170,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 // Stage 0 uses chars/4 approximation; the README discloses this adjacent
 // to the usage.*_tokens docs.
 func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() { s.measure.RecordLatency("/v1/messages/count_tokens", time.Since(start)) }()
+
 	body, err := s.readBody(r, w)
 	if err != nil {
 		return
@@ -153,18 +185,7 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Flatten everything we can to a single concatenated string for the
-	// approximation. We rely on the slog redactor to keep sensitive content
-	// out of any debug logging that runs alongside this path.
-	var parts []string
-	if len(req.System) > 0 {
-		parts = append(parts, string(req.System))
-	}
-	for _, m := range req.Messages {
-		parts = append(parts, string(m.Content))
-	}
-
-	n := tokens.Approximate(strings.Join(parts, " "))
+	n := approxInputTokens(&req)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]int{"input_tokens": n}); err != nil {
 		s.log.Error("response encode failed", slog.String("path", "/v1/messages/count_tokens"), slog.String("error", err.Error()))

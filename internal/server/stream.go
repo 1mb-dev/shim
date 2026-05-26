@@ -88,6 +88,12 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
+	s.measure.RecordTokenDelta("/v1/messages",
+		approxInputTokens(req),
+		openaiResp.Usage.PromptTokens,
+		openaiResp.Usage.CompletionTokens,
+	)
+
 	events, err := translate.ToAnthropicSSE(&openaiResp, req.Model)
 	if err != nil {
 		writeError(w, s.log, http.StatusInternalServerError, errAPI,

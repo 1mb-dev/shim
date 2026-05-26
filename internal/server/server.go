@@ -12,6 +12,7 @@ import (
 
 	"github.com/1mb-dev/shim/internal/adapter"
 	"github.com/1mb-dev/shim/internal/config"
+	"github.com/1mb-dev/shim/internal/measure"
 )
 
 // clientProvider is the optional-interface extension adapters use to supply
@@ -29,6 +30,7 @@ type Server struct {
 	adapter adapter.Adapter
 	client  *http.Client
 	http    *http.Server
+	measure *measure.Collector
 }
 
 // New constructs a Server. The adapter must already be registered (via the
@@ -55,6 +57,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		log:     log,
 		adapter: a,
 		client:  client,
+		measure: measure.New(),
 	}
 
 	mux := http.NewServeMux()
