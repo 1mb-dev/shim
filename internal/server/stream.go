@@ -77,7 +77,7 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 
 	normalised, err := s.adapter.NormalizeResponse(upstream)
 	if err != nil {
-		s.writeUpstreamError(w, "/v1/messages", upstream.StatusCode, normalised, err)
+		s.writeUpstreamError(w, "/v1/messages", openaiReq.Model, upstream.StatusCode, normalised, err)
 		return
 	}
 

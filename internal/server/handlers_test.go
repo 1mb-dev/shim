@@ -904,19 +904,23 @@ func TestBindAddrExplicit(t *testing.T) {
 }
 
 // TestMessages_UpstreamBadRequest_400 pins writeUpstreamError's default
-// branch (non-401/403/429/5xx upstream status) → maps to 502 errAPI.
-// Without this fence, the default branch can mis-class silently. Closes
-// Jordan-review HIGH finding (handlers.go:192 default branch uncovered).
+// branch (non-401/403/429/5xx upstream status) → maps to 502 errAPI, AND
+// the new `upstream_error` log line carrying the captured body — Stage 2.6
+// turned this branch from opaque to honest. Without these fences, either
+// the status mapping or the body capture could regress silently.
 func TestMessages_UpstreamBadRequest_400(t *testing.T) {
+	const upstreamErrPhrase = "upstream rejected prompt"
+	upstreamErrBody := `{"error":"` + upstreamErrPhrase + `"}`
+
 	s := newStub()
 	defer s.close()
 	s.mu.Lock()
 	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
-		_, _ = w.Write([]byte(`{"error":"upstream rejected prompt"}`))
+		_, _ = w.Write([]byte(upstreamErrBody))
 	}
 	s.mu.Unlock()
-	srv, _ := newTestServer(t, s)
+	srv, logBuf := newTestServer(t, s)
 
 	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
 	resp := doPOST(t, srv, "/v1/messages", body)
@@ -926,6 +930,23 @@ func TestMessages_UpstreamBadRequest_400(t *testing.T) {
 	}
 	if !strings.Contains(respBody, "upstream error") {
 		t.Errorf("body should surface default-branch message: %s", respBody)
+	}
+	if strings.Contains(respBody, upstreamErrPhrase) {
+		t.Errorf("upstream body must NOT be echoed to client: %s", respBody)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, `"msg":"upstream error"`) {
+		t.Errorf("logs missing upstream-error line: %s", logs)
+	}
+	if !strings.Contains(logs, `"upstream_status":400`) {
+		t.Errorf("logs missing upstream_status=400: %s", logs)
+	}
+	if !strings.Contains(logs, `"body_preview":`) || !strings.Contains(logs, upstreamErrPhrase) {
+		t.Errorf("logs missing body_preview with upstream body: %s", logs)
+	}
+	if !strings.Contains(logs, `"resolved_model":"stub-model"`) {
+		t.Errorf("logs missing resolved_model=stub-model: %s", logs)
 	}
 }
 

@@ -253,7 +253,9 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
 - `upstream_errors.<path>` counts non-2xx responses from the configured
   upstream. `total` is all of them; `class_4xx` + `class_5xx` bucket by
   HTTP class (3xx and oddities contribute to `total` and `by_status` only).
-  `by_status` is the per-code breakdown for drill-down.
+  `by_status` is the per-code breakdown for drill-down. The companion
+  diagnostic — the upstream body itself — is captured on the
+  `upstream error` log line; see "Errors and debugging" below.
 
 **Caveats.** The endpoint is loopback-only by default (no auth — matches
 `/health`). State is in-memory only and resets on restart. The JSON shape
@@ -286,6 +288,56 @@ straight from the upstream's `usage.prompt_tokens` and
   }
 }
 ```
+
+## Errors and debugging
+
+When the configured upstream returns a non-2xx, shim emits a single
+`upstream error` log line at error level before writing the
+Anthropic-shaped error response to the client:
+
+```json
+{
+  "level": "ERROR",
+  "msg": "upstream error",
+  "endpoint": "/v1/messages",
+  "adapter": "deepseek",
+  "upstream_status": 400,
+  "resolved_model": "deepseek-v4-pro",
+  "body_preview": "{\"error\":{\"type\":\"context_length_exceeded\",\"message\":\"...\"}}"
+}
+```
+
+The same event also increments
+`upstream_errors[/v1/messages].by_status[400]` in `/v1/metrics`. The
+metrics counter is the histogram; this log line is the per-request
+diagnostic.
+
+**Field reference.**
+
+- `upstream_status` — the actual HTTP code the upstream returned (separate
+  from shim's response status, which is the Anthropic-shaped translation).
+- `resolved_model` — the model name after `Adapter.MapModel`, i.e. what
+  shim sent to the upstream. Joinable to the prior `model rewritten` log
+  line without timestamp triangulation.
+- `body_preview` — the first 1024 bytes of the upstream response body,
+  recorded verbatim (truncated, not pretty-printed). The cap lives at
+  `upstreamBodyLogBytes` in `internal/server/handlers.go`; patch the
+  constant if you need a different value.
+
+**Upstream-echo disclosure.** The `body_preview` field is NOT routed
+through shim's key-based redactor. Its content is by definition
+operator-facing diagnostic — that's the only reason the field exists.
+Some upstreams echo a fragment of the offending request back in their
+error response (e.g. a quoted snippet of the prompt that exceeded the
+context window). On those upstreams, `body_preview` will carry that
+fragment. This is the deliberate trade-off for thesis-1 honesty at the
+boundary: an opaque "upstream status 400" tells you nothing about what
+to fix. The upstream body is never echoed to the client, only logged.
+
+If your shim deployment ships logs to a destination where upstream-echoed
+prompt content is a concern, run a downstream redactor against the
+`body_preview` field at the log sink. Shim does not pre-redact here
+because the diagnostic value depends on the verbatim form.
 
 ## Project layout
 

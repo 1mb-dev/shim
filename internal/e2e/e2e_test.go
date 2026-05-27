@@ -311,6 +311,24 @@ func TestE2E_Upstream400Becomes502(t *testing.T) {
 			t.Errorf("stderr missing 'upstream status 400' detail")
 		}
 
+		// Assertion C2: Stage 2.6 — the new `upstream error` log line MUST
+		// surface the upstream body so an operator can diagnose without
+		// re-instrumenting. body_preview, upstream_status, resolved_model are
+		// the three fields whose absence was the entire reason for 2.6.
+		if !strings.Contains(stderr, `"msg":"upstream error"`) {
+			t.Errorf("stderr missing upstream-error log line")
+		}
+		if !strings.Contains(stderr, `"upstream_status":400`) {
+			t.Errorf("stderr missing upstream_status=400")
+		}
+		if !strings.Contains(stderr, `"resolved_model":"deepseek-v4-pro"`) {
+			t.Errorf("stderr missing resolved_model=deepseek-v4-pro")
+		}
+		if !strings.Contains(stderr, `"body_preview":`) ||
+			!strings.Contains(stderr, "deepseek-v4-pro[1m] is not available") {
+			t.Errorf("stderr missing body_preview carrying upstream error body")
+		}
+
 		// Assertion D: upstream_errors counter incremented for status 400.
 		// Stage 2.5b: previously a t.Log gap; now a hard assertion.
 		after := h.Metrics()

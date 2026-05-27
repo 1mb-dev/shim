@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/1mb-dev/shim/internal/measure"
 	"github.com/1mb-dev/shim/internal/tokens"
@@ -18,6 +19,14 @@ import (
 // over this are truncated at the server boundary with a warn log rather
 // than forwarded to a 400 that looks like a shim bug.
 const maxStopSequences = 4
+
+// upstreamBodyLogBytes caps the bytes of upstream-error body recorded in
+// the `upstream_error` log line. 1024 covers the typical OpenAI-style
+// `{"error":{"type":"...","message":"..."}}` envelope with room for echoed
+// prompt fragments; truncates pathologically large 5xx HTML pages.
+// Operator-facing only — body never echoed to the client. See README
+// "Errors and debugging" for the upstream-echo disclosure.
+const upstreamBodyLogBytes = 1024
 
 // handleHealth — GET /health → {"status":"ok"}.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -210,7 +219,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	normalised, err := s.adapter.NormalizeResponse(upstream)
 	if err != nil {
-		s.writeUpstreamError(w, "/v1/messages", upstream.StatusCode, normalised, err)
+		s.writeUpstreamError(w, "/v1/messages", openaiReq.Model, upstream.StatusCode, normalised, err)
 		return
 	}
 
@@ -297,12 +306,43 @@ func (s *Server) readBody(r *http.Request, w http.ResponseWriter) ([]byte, error
 }
 
 // writeUpstreamError translates a non-2xx upstream response into the right
-// Anthropic-shaped error class. The upstream body is NOT echoed (it can
-// contain prompt content or other sensitive material). endpoint is the
-// shim-side endpoint that initiated the upstream call (e.g. "/v1/messages")
-// — used to bucket the error in /v1/metrics' upstream_errors aggregate.
-func (s *Server) writeUpstreamError(w http.ResponseWriter, endpoint string, upstreamStatus int, _ []byte, err error) {
+// Anthropic-shaped error class. The upstream body is NOT echoed to the
+// client (it can contain prompt content or other sensitive material), but
+// it IS logged as `body_preview` on the `upstream_error` line for operator
+// diagnosis — thesis-1: the proxy's reason to exist is honest boundary
+// visibility. See README "Errors and debugging" for the upstream-echo
+// disclosure. endpoint is the shim-side endpoint that initiated the
+// upstream call (e.g. "/v1/messages") — used to bucket the error in
+// /v1/metrics' upstream_errors aggregate. resolvedModel is the upstream
+// model name after Adapter.MapModel; carried on the log line so a failure
+// is joinable to the prior "model rewritten" breadcrumb without timestamp
+// triangulation.
+func (s *Server) writeUpstreamError(w http.ResponseWriter, endpoint, resolvedModel string, upstreamStatus int, body []byte, err error) {
 	s.measure.RecordUpstreamError(endpoint, upstreamStatus)
+
+	preview := body
+	if len(preview) > upstreamBodyLogBytes {
+		preview = preview[:upstreamBodyLogBytes]
+		// Byte truncation may have cut a multi-byte UTF-8 rune; walk back
+		// at most 3 bytes (max continuation length) so the tail is
+		// rune-clean. Invalid bytes ELSEWHERE in the body stay as-is —
+		// slog emits U+FFFD for them, which is the honest signal that the
+		// upstream sent non-UTF-8 content.
+		for i := 0; i < 3 && len(preview) > 0; i++ {
+			if r, _ := utf8.DecodeLastRune(preview); r != utf8.RuneError {
+				break
+			}
+			preview = preview[:len(preview)-1]
+		}
+	}
+	s.log.Error("upstream error",
+		slog.String("endpoint", endpoint),
+		slog.String("adapter", s.adapter.Name()),
+		slog.Int("upstream_status", upstreamStatus),
+		slog.String("resolved_model", resolvedModel),
+		slog.String("body_preview", string(preview)),
+	)
+
 	switch {
 	case upstreamStatus == http.StatusUnauthorized || upstreamStatus == http.StatusForbidden:
 		writeError(w, s.log, http.StatusUnauthorized, errAuthentication,

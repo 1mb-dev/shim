@@ -3,6 +3,29 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] — Stage 2.6 (2026-05-27)
+
+Upstream boundary honesty. A real DeepSeek session produced ~20
+consecutive `upstream status 400` responses; the log line carried no
+body, no class, nothing diagnosable. `writeUpstreamError` was discarding
+the upstream body into `_ []byte`. Thesis-1 violation at the boundary
+that matters most. One commit closes it.
+
+### Added
+- `upstream error` log line (slog ERROR) emitted before the Anthropic-shaped client error. Fields: `endpoint`, `adapter`, `upstream_status`, `resolved_model`, `body_preview`. Joinable to the prior `model rewritten` breadcrumb via `resolved_model` without timestamp triangulation. See README "Errors and debugging".
+- `const upstreamBodyLogBytes = 1024` in `internal/server/handlers.go` — caps the bytes of upstream-error body recorded on the log line. Operator-facing only; never echoed to the client.
+- README "Errors and debugging" section documenting the new log line, the truncation cap, and the upstream-echo disclosure.
+
+### Changed
+- `server.(*Server).writeUpstreamError` signature gains `resolvedModel string` and the previously-discarded body parameter is now used (was `_ []byte`).
+- `TestMessages_UpstreamBadRequest_400` and `TestE2E_Upstream400Becomes502` extended to pin the new log fields.
+
+### Known gaps (deliberately deferred — see `todos/shim-stage2.6-plan.md`)
+- No request IDs / response correlation header. Solo dev, timestamp-correlatable logs — adding a public response header is premature backward-compat surface.
+- No client-visible upstream error-class parsing. The human reads shim logs; `body_preview` already shows the class to the only reader who matters.
+- No `/v1/metrics` ring buffer of recent upstream-error bodies. Logs are debugger-grade; metrics ring buffer is operator-grade and not yet justified.
+- No retry policy. Cannot be designed without knowing what's retryable; informed by Stage 2.6's captured data.
+
 ## [Unreleased] — Stage 2.5 + 2.5b (2026-05-27)
 
 Process-boundary integration testing + measurement-honesty pass before
