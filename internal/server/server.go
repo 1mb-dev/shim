@@ -67,9 +67,13 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		Addr:              cfg.BindAddr + ":" + strconv.Itoa(cfg.Port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      70 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1 MiB; matches net/http default, made explicit to pair with MAX_REQUEST_BYTES.
+		// WriteTimeout sized to outlive Client.Timeout below — so when an
+		// upstream call is slow, the cancellation surfaces as an
+		// upstream-error (visible in logs + metrics) instead of as a
+		// server-side write timeout (which has no upstream context).
+		WriteTimeout:   200 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MiB; matches net/http default, made explicit to pair with MAX_REQUEST_BYTES.
 	}
 	return s, nil
 }
@@ -126,7 +130,13 @@ func newUpstreamClient() *http.Client {
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 	return &http.Client{
-		Timeout:   60 * time.Second,
+		// 180s ceiling: covers DeepSeek v4-pro reasoning-mode generations
+		// (~30-60s think + ~30-60s content under buffer-then-restream MVP).
+		// Real Claude Code experiment hit Client.Timeout at 60s on a
+		// multi-persona review (Stage 2.6b reproduction, 2026-05-27).
+		// Pair: server WriteTimeout = 200s in New() so the upstream
+		// timeout fires first and surfaces as a recordable upstream error.
+		Timeout:   180 * time.Second,
 		Transport: transport,
 	}
 }

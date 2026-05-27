@@ -3,6 +3,18 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] — Stage 2.6b-followup (2026-05-27)
+
+Live experiment hit `Client.Timeout=60s` on a multi-persona review
+through shim; legitimate long generations need wider headroom.
+
+### Changed
+- Upstream `http.Client.Timeout` raised 60s → 180s in `server.go::newUpstreamClient`. Covers DeepSeek v4-pro reasoning-mode generations under buffer-then-restream MVP (~30-60s think + ~30-60s content).
+- Server `WriteTimeout` raised 70s → 200s. Sized to outlive Client.Timeout so upstream cancellations surface as recordable upstream errors rather than as server-side write timeouts.
+
+### Known gap surfaced (deferred to backlog)
+- Body-read timeouts mid-stream get bucketed as `upstream_errors.by_status.200` because `upstream.StatusCode` reflects the headers that arrived before the timeout. See `todos/backlog.md`.
+
 ## [Unreleased] — Stage 2.6b (2026-05-27)
 
 Thinking control plane + L2-demand telemetry. Stage 2.6's body capture
