@@ -53,7 +53,7 @@ No proxy needed.
 - `GET /health` — `{"status":"ok"}`.
 - Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences` (capped at 4 per OpenAI's limit; over-cap requests are truncated and a `warn` log line emitted), `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
 - One adapter: **DeepSeek** (`https://api.deepseek.com/v1`, OpenAI-compatible endpoint).
-- Model mapping: shim mirrors DeepSeek's [own server-side prefix rule](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code). Claude Code sends `claude-opus*`/`claude-sonnet*`/`claude-haiku*`; shim routes opus to `deepseek-v4-pro[1m]`, sonnet and haiku to `deepseek-v4-flash`. Override per role via `UPSTREAM_OPUS_MODEL` / `UPSTREAM_SONNET_MODEL` / `UPSTREAM_HAIKU_MODEL`. Non-claude-prefix names pass through unchanged unless `UPSTREAM_MODEL` is set as a catch-all. Every rewrite logs `info` and increments `rewrites.model` in `/v1/metrics`.
+- Model mapping: Claude Code sends `claude-opus*`/`claude-sonnet*`/`claude-haiku*`; shim routes opus to `deepseek-v4-pro`, sonnet and haiku to `deepseek-v4-flash`. These are the only two values DeepSeek's [OpenAI-format chat-completions API](https://api-docs.deepseek.com/api/create-chat-completion) accepts as `model`. (The `deepseek-v4-pro[1m]` 1M-context variant shown in DeepSeek's [Claude Code guide](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code) only works on DeepSeek's native Anthropic endpoint, not the OpenAI-format one shim uses.) Override per role via `UPSTREAM_OPUS_MODEL` / `UPSTREAM_SONNET_MODEL` / `UPSTREAM_HAIKU_MODEL`. Non-claude-prefix names pass through unchanged unless `UPSTREAM_MODEL` is set as a catch-all. Every rewrite logs `info` and increments `rewrites.model` in `/v1/metrics`.
 - `shim run [args...]` launcher: locates `claude` on PATH, injects `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY=shim`, execs it, propagates exit code. Tested end-to-end with `claude --bare -p`.
 - Redacted-by-default JSON logs via `log/slog`. `Authorization`, prompt/message content, URL query strings, and credential-shaped keys are scrubbed at log-write time.
 - Cross-compiled binaries: `darwin/arm64`, `linux/amd64`, `linux/arm64`.
@@ -111,7 +111,7 @@ Copy `.env.example` to `.env` and fill in `UPSTREAM_API_KEY`. All variables:
 | `ADAPTER` | `deepseek` | Adapter to use. Stage 0/1 only registers `deepseek`. |
 | `UPSTREAM_API_KEY` | _required_ | Bearer token sent to the upstream. |
 | `UPSTREAM_BASE_URL` | `https://api.deepseek.com/v1` | Upstream root. |
-| `UPSTREAM_OPUS_MODEL` | (empty → `deepseek-v4-pro[1m]`) | Override for `claude-opus*` inputs. |
+| `UPSTREAM_OPUS_MODEL` | (empty → `deepseek-v4-pro`) | Override for `claude-opus*` inputs. |
 | `UPSTREAM_SONNET_MODEL` | (empty → `deepseek-v4-flash`) | Override for `claude-sonnet*` inputs. |
 | `UPSTREAM_HAIKU_MODEL` | (empty → `deepseek-v4-flash`) | Override for `claude-haiku*` inputs. |
 | `UPSTREAM_MODEL` | (empty) | Catch-all override for non-claude-prefix names (e.g. legacy `claude-3-5-sonnet-*`, direct `deepseek-v4-pro`). Empty = pass through. |

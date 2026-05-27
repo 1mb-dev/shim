@@ -31,10 +31,13 @@ const (
 	// DefaultModel is the legacy fallback used when the caller sends an
 	// empty model name and no UPSTREAM_MODEL is configured.
 	DefaultModel = "deepseek-chat"
-	// DefaultOpusModel maps claude-opus* requests per DeepSeek's official
-	// Claude Code integration guide
-	// (https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code).
-	DefaultOpusModel = "deepseek-v4-pro[1m]"
+	// DefaultOpusModel maps claude-opus* requests to deepseek-v4-pro per
+	// DeepSeek's create-chat-completion API reference, which documents the
+	// OpenAI-format endpoint's allowed values as exactly
+	// [deepseek-v4-flash, deepseek-v4-pro]. The "[1m]" 1M-context variant
+	// only works on DeepSeek's native Anthropic endpoint (/anthropic), not
+	// the OpenAI-format one shim uses.
+	DefaultOpusModel = "deepseek-v4-pro"
 	// DefaultSonnetModel maps claude-sonnet* requests per the same guide.
 	DefaultSonnetModel = "deepseek-v4-flash"
 	// DefaultHaikuModel maps claude-haiku* requests per the same guide.

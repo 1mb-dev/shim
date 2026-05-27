@@ -62,7 +62,8 @@ shim process serves all cases, so absolute checks would be order-dependent.
 
 1. **No upstream-error counter in `/v1/metrics`.** `measure` tracks latency,
    token deltas, and rewrites but not upstream non-2xx counts. Stage 2.5b.
-2. **Default model mapping (`deepseek-v4-pro[1m]`, `deepseek-v4-flash`)
-   produced today's 400.** Either DeepSeek deprecated these names or the
-   active API key doesn't have access. The harness pins the current values
-   in `ModelRewriteLoud`; updating the defaults is a separate change.
+2. ~~Default opus mapping (`deepseek-v4-pro[1m]`) produced live 400s.~~
+   **Resolved.** Verified against DeepSeek's `/api/create-chat-completion`
+   reference: the OpenAI-format endpoint accepts exactly
+   `[deepseek-v4-flash, deepseek-v4-pro]`. The `[1m]` variant is
+   Anthropic-endpoint-only. `DefaultOpusModel` now `deepseek-v4-pro`.

@@ -244,7 +244,7 @@ func TestE2E_ModelRewriteLoud(t *testing.T) {
 		if !strings.Contains(stderr, `"requested":"claude-opus-4-7"`) {
 			t.Errorf("stderr missing requested model in log")
 		}
-		if !strings.Contains(stderr, `"resolved":"deepseek-v4-pro[1m]"`) {
+		if !strings.Contains(stderr, `"resolved":"deepseek-v4-pro"`) {
 			t.Errorf("stderr missing resolved model in log")
 		}
 	})
