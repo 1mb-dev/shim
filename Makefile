@@ -14,10 +14,10 @@ LINT      := $(shell command -v golangci-lint 2>/dev/null || echo $(GOBIN)/golan
 # Stage 0 cross-compile matrix (3 platforms — see plan §AC 2 amendment).
 PLATFORMS := darwin/arm64 linux/amd64 linux/arm64
 
-.PHONY: help build build-all test test-race e2e coverage lint vet clean
+.PHONY: help build build-all test test-race e2e smoke coverage lint vet clean
 
 help:
-	@echo "targets: build build-all test e2e coverage lint vet clean"
+	@echo "targets: build build-all test e2e smoke coverage lint vet clean"
 
 build:
 	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/shim
@@ -46,6 +46,13 @@ test:
 # fast. CI invokes both targets.
 e2e:
 	go test -tags e2e -count=1 ./internal/e2e/...
+
+# Live smoke: spawns ./shim against api.deepseek.com for one real request.
+# Double-gated: build tag `smoke` AND env var SHIM_SMOKE=1. Requires
+# DEEPSEEK_SMOKE_API_KEY (distinct from UPSTREAM_API_KEY for billing
+# isolation). Never run in CI by default; pre-release/pre-push only.
+smoke:
+	go test -tags smoke -count=1 -v ./internal/smoke/...
 
 coverage:
 	go test $(RACE) -coverprofile=cover.out ./...
