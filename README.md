@@ -181,7 +181,8 @@ The launcher prints a single breadcrumb line to stderr (`shim run → claude=/pa
 `GET /v1/metrics` returns a JSON snapshot of what shim has done since
 startup. Per-endpoint latency (p50/p95/p99 from a 1024-sample reservoir),
 the gap between shim's cl100k_base BPE count and the upstream's claimed
-count, and how often shim rewrites requests in flight.
+count, how often shim rewrites requests in flight, and counters for
+total requests seen + upstream non-2xx responses.
 
 ```sh
 curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
@@ -211,6 +212,20 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
     "rewrites": {
         "model": 14,
         "stop_sequences": 2
+    },
+    "requests_seen": {
+        "/health": 5,
+        "/v1/messages": 14,
+        "/v1/messages/count_tokens": 3,
+        "/v1/metrics": 1
+    },
+    "upstream_errors": {
+        "/v1/messages": {
+            "total": 1,
+            "class_4xx": 1,
+            "class_5xx": 0,
+            "by_status": {"400": 1}
+        }
     }
 }
 ```
@@ -231,6 +246,14 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
 - `rewrites.model` counts how often shim replaced the requested model name
   (Stage 0's DeepSeek adapter rewrites every request, so this matches
   `/v1/messages` `n`). `rewrites.stop_sequences` counts over-cap truncations.
+- `requests_seen.<path>` counts every handler entry — the denominator for
+  any ratio operators want to compute (errors per request, rewrites per
+  request, etc.). Increments before parsing or validation; counts all
+  attempts, not just successes.
+- `upstream_errors.<path>` counts non-2xx responses from the configured
+  upstream. `total` is all of them; `class_4xx` + `class_5xx` bucket by
+  HTTP class (3xx and oddities contribute to `total` and `by_status` only).
+  `by_status` is the per-code breakdown for drill-down.
 
 **Caveats.** The endpoint is loopback-only by default (no auth — matches
 `/health`). State is in-memory only and resets on restart. The JSON shape

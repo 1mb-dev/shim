@@ -3,6 +3,33 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] — Stage 2.5 + 2.5b (2026-05-27)
+
+Process-boundary integration testing + measurement-honesty pass before
+Stage 3 adapter #2 lands. Closes three gaps the unit suite couldn't
+reach: silent shim/launcher bugs, silent upstream degradation, and the
+missing live-upstream contract check that today's `deepseek-v4-pro[1m]`
+400 needed to surface.
+
+### Added
+- `internal/e2e/` — `//go:build e2e` package with `Harness.Start(t)`, fake OpenAI-format upstream, and seven test cases covering happy non-stream + stream, model rewrite log + counter, upstream 400 → 502 envelope, fixed token count, measurement reflection, and `shim run` env injection. Plus a harness self-test for cleanup.
+- `make e2e` Makefile target. `make test` is unchanged and does NOT run the e2e suite.
+- `internal/smoke/` — `//go:build smoke` package with one opt-in live-DeepSeek round-trip. Double-gated on `SHIM_SMOKE=1` and `DEEPSEEK_SMOKE_API_KEY` (distinct from `UPSTREAM_API_KEY` for billing isolation).
+- `make smoke` Makefile target. Never invoked by CI; pre-release/pre-push only. See `internal/smoke/README.md`.
+- `measure.RecordRequestSeen(endpoint)` — per-handler-entry counter; the denominator for any per-endpoint ratio.
+- `measure.RecordUpstreamError(endpoint, status)` — counts upstream non-2xx responses, bucketed `class_4xx` / `class_5xx` plus `by_status` drill-down. Surfaces silent upstream degradation that previously showed up only as rising latency.
+- `/v1/metrics` JSON shape gains `requests_seen` and `upstream_errors` top-level keys. See README's Measurement section.
+- Makefile breadcrumb chain: `make test` → tip about `make e2e`; `make e2e` → tip about `make smoke`; `make smoke` → completion line.
+
+### Changed
+- `server.Start()` now binds via `net.Listen` first, then logs the resolved addr (matters when `PORT=0` picks an ephemeral port — thesis-1, don't lie about what we did).
+- DeepSeek adapter `DefaultOpusModel` from `deepseek-v4-pro[1m]` to `deepseek-v4-pro`. The `[1m]` 1M-context variant only works on DeepSeek's `/anthropic` endpoint per their create-chat-completion API reference; the OpenAI-format endpoint shim uses accepts exactly `[deepseek-v4-flash, deepseek-v4-pro]`.
+- `server.(*Server).writeUpstreamError` signature gains an `endpoint` parameter so future adapters bucket their errors cleanly.
+
+### Known gaps surfaced (deferred)
+- **Tool-call JSON not counted in `shim_total`.** `extractText` skips non-text blocks; tool-heavy traffic shows wider shim-vs-upstream gaps. Needs an ADR on tokenization policy before a fix.
+- **Rewrite-count vs requests-seen anomaly** observed once (8 vs 7). `requests_seen` makes the next investigation cheap — no log archaeology needed. Held pending more signal.
+
 ## [Unreleased] — Stage 2 (2026-05-26)
 
 Real tokenizer replaces the Stage 0 `chars/4` approximation; structural
