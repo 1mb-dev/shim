@@ -87,6 +87,14 @@ func TestMapModel(t *testing.T) {
 		// Legacy claude-3-* — does NOT match prefix rule, treated as non-claude
 		{"legacy claude-3-5-sonnet pass-through", "", "", "", "", "claude-3-5-sonnet-20240620", "claude-3-5-sonnet-20240620"},
 		{"legacy claude-3-5-sonnet with UPSTREAM_MODEL", "deepseek-chat", "", "", "", "claude-3-5-sonnet-20240620", "deepseek-chat"},
+
+		// Hyphen-anchor fence — strings that share the prefix but have no
+		// hyphen separator (or no hyphen + extra chars) must NOT match.
+		// Pre-fix, `strings.HasPrefix(model, "claude-opus")` matched
+		// `claude-opusxxx` and silently re-routed it to opus default.
+		{"claude-opusxxx pass-through (no hyphen anchor)", "", "", "", "", "claude-opusxxx", "claude-opusxxx"},
+		{"claude-sonnetx pass-through (no hyphen anchor)", "", "", "", "", "claude-sonnetx", "claude-sonnetx"},
+		{"claude-haiku2 pass-through (no hyphen anchor)", "", "", "", "", "claude-haiku2", "claude-haiku2"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -91,11 +91,17 @@ func (a *impl) Name() string { return Name }
 // model. Mapping rule mirrors DeepSeek's own server-side rule on its native
 // Anthropic endpoint (per the official Claude Code integration guide):
 //
-//   - claude-opus*   → DefaultOpusModel  (or UPSTREAM_OPUS_MODEL)
-//   - claude-sonnet* → DefaultSonnetModel  (or UPSTREAM_SONNET_MODEL)
-//   - claude-haiku*  → DefaultHaikuModel  (or UPSTREAM_HAIKU_MODEL)
+//   - "claude-opus" or "claude-opus-*"   → DefaultOpusModel  (or UPSTREAM_OPUS_MODEL)
+//   - "claude-sonnet" or "claude-sonnet-*" → DefaultSonnetModel (or UPSTREAM_SONNET_MODEL)
+//   - "claude-haiku" or "claude-haiku-*"  → DefaultHaikuModel  (or UPSTREAM_HAIKU_MODEL)
 //   - empty string   → UPSTREAM_MODEL if set, else DefaultModel
 //   - anything else  → UPSTREAM_MODEL if set, else pass through unchanged
+//
+// The hyphen anchor (or bare-pointer exact match) is deliberate: bare
+// `claude-opus` is the role-pointer form, `claude-opus-4-7` is a versioned
+// alias — both should resolve to the opus default. But `claude-opusxxx` is
+// neither and must NOT match (would silently re-route an unrelated model
+// name to opus).
 //
 // Note: Legacy names like `claude-3-5-sonnet-20240620` do NOT match the
 // prefix rule and fall to the pass-through branch — same as DeepSeek's own
@@ -107,17 +113,17 @@ func (a *impl) Name() string { return Name }
 // in /v1/metrics (thesis-2: never silently forward modified traffic).
 func (a *impl) MapModel(model string) string {
 	switch {
-	case strings.HasPrefix(model, "claude-opus"):
+	case model == "claude-opus" || strings.HasPrefix(model, "claude-opus-"):
 		if a.opusModel != "" {
 			return a.opusModel
 		}
 		return DefaultOpusModel
-	case strings.HasPrefix(model, "claude-sonnet"):
+	case model == "claude-sonnet" || strings.HasPrefix(model, "claude-sonnet-"):
 		if a.sonnetModel != "" {
 			return a.sonnetModel
 		}
 		return DefaultSonnetModel
-	case strings.HasPrefix(model, "claude-haiku"):
+	case model == "claude-haiku" || strings.HasPrefix(model, "claude-haiku-"):
 		if a.haikuModel != "" {
 			return a.haikuModel
 		}
