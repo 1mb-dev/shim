@@ -1120,3 +1120,100 @@ func TestMessages_BackTranslationFailureNoRecord(t *testing.T) {
 		t.Errorf("token_delta should be empty after back-translation failure, got %+v", entry)
 	}
 }
+
+// TestMessages_ThinkingEnabled_Returns501 pins Stage 2.6b's loud-fail
+// guard for client-requested extended thinking. The counter
+// `requests.thinking_enabled_seen` is the L2-demand telemetry — if this
+// fires in real traffic, Stage 2.6c is justified; if it stays at zero,
+// L2 stays deferred.
+func TestMessages_ThinkingEnabled_Returns501(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, _ := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"}}`
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", resp.StatusCode)
+	}
+	if !strings.Contains(respBody, "extended thinking not yet supported") {
+		t.Errorf("body should cite 2.6c plan: %s", respBody)
+	}
+
+	snap := srv.measure.Snapshot()
+	if got := snap.Requests["thinking_enabled_seen"]; got != 1 {
+		t.Errorf("requests.thinking_enabled_seen = %d, want 1", got)
+	}
+}
+
+// TestMessages_NoThinking_InjectsDisabled pins the bug fix: when the
+// client omits the thinking field, shim sends thinking={type:disabled} to
+// upstream and counts the injection in rewrites.thinking_disabled.
+// Without this rewrite, DeepSeek's silent-default-enabled behavior 400s
+// on tool-call continuations.
+func TestMessages_NoThinking_InjectsDisabled(t *testing.T) {
+	s := newStub()
+	defer s.close()
+
+	// Override stub to capture the body shim sends to upstream.
+	var capturedBody []byte
+	s.mu.Lock()
+	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}
+	s.mu.Unlock()
+	srv, _ := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+	resp := doPOST(t, srv, "/v1/messages", body)
+	_ = bodyOf(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(capturedBody), `"thinking":{"type":"disabled"}`) {
+		t.Errorf("upstream body missing injected thinking=disabled: %s", capturedBody)
+	}
+
+	snap := srv.measure.Snapshot()
+	if got := snap.Rewrites["thinking_disabled"]; got != 1 {
+		t.Errorf("rewrites.thinking_disabled = %d, want 1", got)
+	}
+}
+
+// TestMessages_ThinkingDisabled_PassesThrough — client explicitly sets
+// thinking={type:disabled}; shim forwards identity and does NOT count a
+// rewrite (the client asked for it, shim didn't inject it). Keeps the
+// thinking_disabled counter semantic as "shim-injected disable", not
+// "every disabled request."
+func TestMessages_ThinkingDisabled_PassesThrough(t *testing.T) {
+	s := newStub()
+	defer s.close()
+
+	var capturedBody []byte
+	s.mu.Lock()
+	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}
+	s.mu.Unlock()
+	srv, _ := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"}}`
+	resp := doPOST(t, srv, "/v1/messages", body)
+	_ = bodyOf(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(capturedBody), `"thinking":{"type":"disabled"}`) {
+		t.Errorf("upstream body should still carry thinking=disabled (identity pass-through): %s", capturedBody)
+	}
+
+	snap := srv.measure.Snapshot()
+	if got := snap.Rewrites["thinking_disabled"]; got != 0 {
+		t.Errorf("rewrites.thinking_disabled = %d, want 0 (no injection — client requested disabled)", got)
+	}
+}

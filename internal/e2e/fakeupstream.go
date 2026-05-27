@@ -43,9 +43,10 @@ type FakeUpstream struct {
 	// DeepSeek endpoint shape.
 	URL string
 
-	mu       sync.Mutex
-	received []RecordedRequest
-	next     *CannedResponse
+	mu                 sync.Mutex
+	received           []RecordedRequest
+	next               *CannedResponse
+	toolContinuationOn bool // see EnforceToolContinuationContract
 }
 
 // NewFakeUpstream starts a fresh fake upstream. Call Close when done.
@@ -95,6 +96,27 @@ func (f *FakeUpstream) SetNext(r CannedResponse) {
 	f.next = &r
 }
 
+// EnforceToolContinuationContract turns on a proxy for DeepSeek's actual
+// rule that "thinking active on prior turn → reasoning_content required
+// on continuation when prior turn made tool_calls." Real DeepSeek returns
+// the canonical 400 below when this rule fires; the fake mimics it when:
+// the request body contains tool_calls in any assistant message in
+// `messages` AND the request did NOT explicitly set
+// thinking={type:"disabled"}.
+//
+// This is a PROXY for the real contract, not a faithful model — DeepSeek
+// actually checks whether reasoning_content was present on the prior
+// assistant turn that made tool_calls. The proxy collapses that to
+// "thinking is not disabled" because Stage 2.6b's whole job is to ensure
+// shim sends thinking=disabled on every outbound, which sidesteps the
+// real contract entirely. If you ever need to test the real contract
+// (Stage 2.6c), reshape this enforcement.
+func (f *FakeUpstream) EnforceToolContinuationContract(on bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.toolContinuationOn = on
+}
+
 func (f *FakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	parsed := map[string]any{}
@@ -109,7 +131,15 @@ func (f *FakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	})
 	next := f.next
 	f.next = nil
+	contractOn := f.toolContinuationOn
 	f.mu.Unlock()
+
+	if contractOn && violatesToolContinuationContract(parsed) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":{"message":"The ` + "`reasoning_content`" + ` in the thinking mode must be passed back to the API.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`))
+		return
+	}
 
 	if next == nil {
 		next = &CannedResponse{Status: 200, Body: defaultChatResponse()}
@@ -126,6 +156,39 @@ func (f *FakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(next.Body)
+}
+
+// violatesToolContinuationContract returns true when the request has
+// tool_calls in any assistant message of `messages` AND thinking is not
+// explicitly disabled. See EnforceToolContinuationContract for the proxy
+// semantics — this is NOT a faithful model of DeepSeek's actual rule.
+func violatesToolContinuationContract(body map[string]any) bool {
+	thinkingDisabled := false
+	if t, ok := body["thinking"].(map[string]any); ok {
+		if v, ok := t["type"].(string); ok && v == "disabled" {
+			thinkingDisabled = true
+		}
+	}
+	if thinkingDisabled {
+		return false
+	}
+	msgs, ok := body["messages"].([]any)
+	if !ok {
+		return false
+	}
+	for _, m := range msgs {
+		mm, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		if mm["role"] != "assistant" {
+			continue
+		}
+		if tcs, ok := mm["tool_calls"].([]any); ok && len(tcs) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultChatResponse returns the canned OpenAI ChatCompletions payload

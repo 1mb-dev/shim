@@ -85,7 +85,8 @@ func isSensitiveKey(k string) bool {
 	switch lk {
 	case "authorization", "cookie", "set-cookie", "x-api-key",
 		"proxy-authorization", "messages", "system", "prompt",
-		"content", "body", "system_prompt", "tool_result", "input":
+		"content", "body", "system_prompt", "tool_result", "input",
+		"thinking", "reasoning_content":
 		return true
 	}
 	for _, sub := range []string{"api_key", "apikey", "secret", "password", "token"} {

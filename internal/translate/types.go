@@ -11,16 +11,25 @@ import "encoding/json"
 // Fields irrelevant to Stage 0 are intentionally omitted (e.g. metadata,
 // service_tier) — they round-trip via json.Unmarshal's ignored-field path.
 type AnthropicRequest struct {
-	Model         string             `json:"model"`
-	Messages      []AnthropicMessage `json:"messages"`
-	System        json.RawMessage    `json:"system,omitempty"` // string | content[]
-	MaxTokens     int                `json:"max_tokens"`
-	Stream        bool               `json:"stream,omitempty"`
-	Temperature   *float64           `json:"temperature,omitempty"`
-	TopP          *float64           `json:"top_p,omitempty"`
-	StopSequences []string           `json:"stop_sequences,omitempty"`
-	Tools         []AnthropicTool    `json:"tools,omitempty"`
-	ToolChoice    json.RawMessage    `json:"tool_choice,omitempty"`
+	Model         string                   `json:"model"`
+	Messages      []AnthropicMessage       `json:"messages"`
+	System        json.RawMessage          `json:"system,omitempty"` // string | content[]
+	MaxTokens     int                      `json:"max_tokens"`
+	Stream        bool                     `json:"stream,omitempty"`
+	Temperature   *float64                 `json:"temperature,omitempty"`
+	TopP          *float64                 `json:"top_p,omitempty"`
+	StopSequences []string                 `json:"stop_sequences,omitempty"`
+	Tools         []AnthropicTool          `json:"tools,omitempty"`
+	ToolChoice    json.RawMessage          `json:"tool_choice,omitempty"`
+	Thinking      *AnthropicThinkingConfig `json:"thinking,omitempty"`
+}
+
+// AnthropicThinkingConfig is the extended-thinking request param. Stage
+// 2.6b only inspects Type ("enabled"|"disabled") — budget_tokens, display,
+// and other fields get json-unmarshal-silently-dropped. Stage 2.6c adds
+// them when there's a code path that uses them.
+type AnthropicThinkingConfig struct {
+	Type string `json:"type"`
 }
 
 // AnthropicMessage holds a role and content. Content is either a string or
@@ -95,15 +104,24 @@ type AnthropicUsage struct {
 
 // OpenAIRequest is the body we send to {adapter.BaseURL}/chat/completions.
 type OpenAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stop        []string        `json:"stop,omitempty"`
-	Tools       []OpenAITool    `json:"tools,omitempty"`
-	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+	Model       string                  `json:"model"`
+	Messages    []OpenAIMessage         `json:"messages"`
+	MaxTokens   int                     `json:"max_tokens,omitempty"`
+	Temperature *float64                `json:"temperature,omitempty"`
+	TopP        *float64                `json:"top_p,omitempty"`
+	Stop        []string                `json:"stop,omitempty"`
+	Tools       []OpenAITool            `json:"tools,omitempty"`
+	ToolChoice  json.RawMessage         `json:"tool_choice,omitempty"`
+	Stream      bool                    `json:"stream,omitempty"`
+	Thinking    *DeepSeekThinkingConfig `json:"thinking,omitempty"`
+}
+
+// DeepSeekThinkingConfig is the thinking-mode control param on DeepSeek's
+// OpenAI-format endpoint. Stage 2.6b only ever emits {Type: "disabled"} —
+// reasoning_effort and other fields land in 2.6c when there's a code path
+// that uses them.
+type DeepSeekThinkingConfig struct {
+	Type string `json:"type"`
 }
 
 // OpenAIMessage covers system, user, assistant, and tool roles. Content is

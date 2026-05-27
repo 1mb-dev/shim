@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/1mb-dev/shim/internal/measure"
 	"github.com/1mb-dev/shim/internal/translate"
 )
 
@@ -52,6 +53,9 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 	}
 	openaiReq.Model = s.adapter.MapModel(req.Model)
 	s.logModelRewrite(req.Model, openaiReq.Model)
+	if req.Thinking == nil {
+		s.measure.RecordRewriteEvent(measure.RewriteThinkingDisabled)
+	}
 	openaiReq.Stream = false // MVP: buffer-then-restream
 
 	openaiBody, err := json.Marshal(openaiReq)

@@ -169,6 +169,17 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Stage 2.6b: 501 on request-level thinking=enabled. Different layer
+	// from containsThinkingBlock above (which gates message-level thinking
+	// content blocks). The counter is the L2-demand telemetry that decides
+	// whether Stage 2.6c fires — see todos/shim-stage2.6b-plan.md.
+	if req.Thinking != nil && req.Thinking.Type == "enabled" {
+		s.measure.RecordThinkingEnabledSeen()
+		writeError(w, s.log, http.StatusNotImplemented, errInvalidRequest,
+			"extended thinking not yet supported by shim's translator (planned for Stage 2.6c)")
+		return
+	}
+
 	// OpenAI-compatible upstreams reject stop arrays larger than 4 with a
 	// 400 that looks like a shim bug; cap loudly per thesis-2. Run AFTER
 	// the thinking-block gate so a request rejected at 501 doesn't leave a
@@ -195,6 +206,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	openaiReq.Model = s.adapter.MapModel(req.Model)
 	s.logModelRewrite(req.Model, openaiReq.Model)
+	if req.Thinking == nil {
+		s.measure.RecordRewriteEvent(measure.RewriteThinkingDisabled)
+	}
 
 	openaiBody, err := json.Marshal(openaiReq)
 	if err != nil {

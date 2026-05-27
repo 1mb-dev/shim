@@ -517,6 +517,118 @@ func pidAlive(pid int) bool {
 	}
 }
 
+// ---- Stage 2.6b regression: tool-call continuation no longer 400s ----
+// Named per Jordan's huddle ask. Pre-2.6b: this test fails because shim
+// forwards no thinking field, fake stub (with contract on) 400s on the
+// tool-call continuation, shim translates to 502. Post-2.6b: shim
+// auto-injects thinking={type:disabled}, stub sees disabled, 200s.
+//
+// The fixture is a 2-turn conversation: turn 1 user prompt → assistant
+// returns a tool_call (canned). Turn 2 sends the assistant turn + a
+// tool_result back; this is the call that historically 400d. Asserts:
+// 200, rewrites.thinking_disabled >= 2 (one per request), no
+// upstream_errors logged.
+
+func TestE2E_ToolContinuation_NoLongerTriggers400(t *testing.T) {
+	withBudget(t, perCaseBudget, func() {
+		h := Start(t)
+		h.Upstream.EnforceToolContinuationContract(true)
+
+		// Turn 1: simulate DeepSeek emitting a tool_call response.
+		h.Upstream.SetNext(CannedResponse{
+			Status: 200,
+			Body: map[string]any{
+				"id":      "chatcmpl-tool1",
+				"object":  "chat.completion",
+				"created": 1700000000,
+				"model":   "deepseek-v4-pro",
+				"choices": []map[string]any{{
+					"index": 0,
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": nil,
+						"tool_calls": []map[string]any{{
+							"id":   "call_1",
+							"type": "function",
+							"function": map[string]any{
+								"name":      "get_weather",
+								"arguments": `{"city":"SF"}`,
+							},
+						}},
+					},
+					"finish_reason": "tool_calls",
+				}},
+				"usage": map[string]any{"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+			},
+		})
+
+		before := h.Metrics()
+
+		// Turn 1 request.
+		status, body := postJSON(t, h.URL+"/v1/messages", map[string]any{
+			"model":      "claude-opus-4-7",
+			"max_tokens": 50,
+			"tools": []map[string]any{{
+				"name":         "get_weather",
+				"description":  "Returns weather",
+				"input_schema": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}},
+			}},
+			"messages": []map[string]any{
+				{"role": "user", "content": "what's the weather in SF?"},
+			},
+		})
+		if status != 200 {
+			t.Fatalf("turn 1 status=%d body=%s", status, body)
+		}
+
+		// Turn 2: send assistant tool_use + user tool_result back. This is
+		// the request shape that pre-2.6b would 400 under the stub's
+		// contract (because thinking wasn't being disabled on outbound).
+		status, body = postJSON(t, h.URL+"/v1/messages", map[string]any{
+			"model":      "claude-opus-4-7",
+			"max_tokens": 50,
+			"tools": []map[string]any{{
+				"name":         "get_weather",
+				"description":  "Returns weather",
+				"input_schema": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}},
+			}},
+			"messages": []map[string]any{
+				{"role": "user", "content": "what's the weather in SF?"},
+				{"role": "assistant", "content": []map[string]any{{
+					"type":  "tool_use",
+					"id":    "call_1",
+					"name":  "get_weather",
+					"input": map[string]any{"city": "SF"},
+				}}},
+				{"role": "user", "content": []map[string]any{{
+					"type":        "tool_result",
+					"tool_use_id": "call_1",
+					"content":     "sunny, 22C",
+				}}},
+			},
+		})
+		if status != 200 {
+			t.Fatalf("turn 2 status=%d body=%s — the very 400 Stage 2.6b should prevent", status, body)
+		}
+
+		after := h.Metrics()
+		dThinking := after.Rewrites["thinking_disabled"] - before.Rewrites["thinking_disabled"]
+		if dThinking < 2 {
+			t.Errorf("rewrites.thinking_disabled delta = %d, want >= 2 (one per request)", dThinking)
+		}
+		dErr := 0
+		if a, ok := after.UpstreamErrors["/v1/messages"]; ok {
+			dErr += a.Total
+		}
+		if b, ok := before.UpstreamErrors["/v1/messages"]; ok {
+			dErr -= b.Total
+		}
+		if dErr != 0 {
+			t.Errorf("upstream_errors total delta = %d, want 0", dErr)
+		}
+	})
+}
+
 func mustContainInOrder(t *testing.T, haystack string, needles ...string) {
 	t.Helper()
 	idx := 0

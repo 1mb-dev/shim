@@ -3,6 +3,44 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] — Stage 2.6b (2026-05-27)
+
+Thinking control plane + L2-demand telemetry. Stage 2.6's body capture
+identified the reasoning_content roundtrip bug within one session.
+Huddle (Linus + Maya + Jordan + Alex) recommended split-and-measure over
+atomic L1+L2: bug fix ships now, full reasoning_content ↔ thinking-block
+translation (Stage 2.6c) fires only if `requests.thinking_enabled_seen`
+counter shows real demand.
+
+### Added
+- `thinking` request param parsed from inbound Anthropic Messages requests; forwarded to DeepSeek's OpenAI-format endpoint via the matching `thinking` body param. When client omits the field, shim injects `{type: "disabled"}` on outbound — reverses DeepSeek's silent-default-enabled behavior that 400'd on tool-call continuations.
+- `requests.thinking_enabled_seen` counter in `/v1/metrics` — fires when a client sends `thinking: {type: "enabled"}`. The L2-demand telemetry for Stage 2.6c.
+- `rewrites.thinking_disabled` counter in `/v1/metrics` — fires when shim injects `{type: "disabled"}` because the client omitted thinking. Explicit client-requested disabled is NOT counted (it's not a rewrite).
+- `TestE2E_ToolContinuation_NoLongerTriggers400` — 2-turn fixture (tool_call + tool_result continuation) that pre-2.6b would fail under the fake stub's tool-continuation contract proxy. Named regression fence.
+- Three unit tests: `TestMessages_ThinkingEnabled_Returns501`, `TestMessages_NoThinking_InjectsDisabled`, `TestMessages_ThinkingDisabled_PassesThrough`.
+- `FakeUpstream.EnforceToolContinuationContract(bool)` in the e2e harness — opt-in stub mode that 400s on tool-call continuations without `thinking: {type: "disabled"}`. PROXY for DeepSeek's real contract, not faithful model; documented in godoc.
+- `thinking` and `reasoning_content` added to `obslog` scrub list — defense-in-depth; these fields don't appear in shim's own log calls today but the Stage 2.6 `body_preview` may carry them when DeepSeek echoes errors. (Deliberately NOT scrubbing `reasoning_effort` — config string, not content.)
+
+### Changed
+- `AnthropicRequest` gains `Thinking *AnthropicThinkingConfig` field (minimal `{Type string}` shape; budget_tokens/display will land in 2.6c when there's a code path that uses them).
+- `OpenAIRequest` gains `Thinking *DeepSeekThinkingConfig` field (minimal `{Type string}` shape).
+- `measure.Collector` gains `requests map[string]int` and corresponding `Requests` field on `Snapshot` with JSON key `requests`. Generic enough that future request-feature counters land here too.
+
+### 501 inline guard
+- Mirrors the existing `containsThinkingBlock` 501 in `handleMessages` — different layer (request-level config vs message-level content blocks). Both gates fall in Stage 2.6c.
+
+### Deferred to Stage 2.6c (gated on telemetry)
+- reasoning_content ↔ thinking-block translation (data plane).
+- Constant signature `"shim-passthrough-v1"` on thinking blocks (locked design, Linus call).
+- `reasoningClient` sibling http.Client with longer timeout (Alex).
+- `reasoning_latency_ms` histogram.
+- Tool+thinking interleave fixtures.
+
+### Deferred indefinitely
+- `display: "omitted"` and `redacted_thinking` blocks — no stateless roundtrip path.
+- Streaming `delta.reasoning_content` per-token forwarding — alongside true SSE passthrough work.
+- Env-var knob `SHIM_THINKING` — adds config sprawl with no user-behind-the-knob.
+
 ## [Unreleased] — Stage 2.6 (2026-05-27)
 
 Upstream boundary honesty. A real DeepSeek session produced ~20

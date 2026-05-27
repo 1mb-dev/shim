@@ -69,6 +69,18 @@ func AnthropicToOpenAI(req *AnthropicRequest) (*OpenAIRequest, error) {
 		return nil, err
 	}
 
+	// Thinking control plane (Stage 2.6b). When client omits the field,
+	// shim sends thinking=disabled to upstream — reverses the silent
+	// default-enabled behavior that broke tool-call continuations on
+	// reasoning-model upstreams. When client explicitly sends
+	// thinking=disabled, pass through identity. The thinking=enabled case
+	// never reaches the translator (handler short-circuits at 501).
+	if req.Thinking == nil {
+		out.Thinking = &DeepSeekThinkingConfig{Type: "disabled"}
+	} else {
+		out.Thinking = &DeepSeekThinkingConfig{Type: req.Thinking.Type}
+	}
+
 	return out, nil
 }
 

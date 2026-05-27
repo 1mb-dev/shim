@@ -202,6 +202,7 @@ type MetricsSnapshot struct {
 	Rewrites       map[string]int
 	UpstreamErrors map[string]UpstreamErrorStats
 	RequestsSeen   map[string]int
+	Requests       map[string]int
 }
 
 // LatencyStats mirrors measure.LatencyStats with N as the count of
@@ -257,6 +258,7 @@ func (h *Harness) Metrics() *MetricsSnapshot {
 			ByStatus map[string]int `json:"by_status"`
 		} `json:"upstream_errors"`
 		RequestsSeen map[string]int `json:"requests_seen"`
+		Requests     map[string]int `json:"requests"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		h.t.Fatalf("metrics decode: %v", err)
@@ -267,6 +269,7 @@ func (h *Harness) Metrics() *MetricsSnapshot {
 		Rewrites:       raw.Rewrites,
 		UpstreamErrors: make(map[string]UpstreamErrorStats, len(raw.UpstreamErrors)),
 		RequestsSeen:   raw.RequestsSeen,
+		Requests:       raw.Requests,
 	}
 	for k, v := range raw.Latency {
 		snap.Latency[k] = LatencyStats{P50: v.P50, P95: v.P95, P99: v.P99, N: v.N}

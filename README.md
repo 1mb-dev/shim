@@ -52,6 +52,7 @@ No proxy needed.
 - `GET /v1/metrics` — per-endpoint latency p50/p95/p99, shim-vs-upstream token-delta totals, rewrite-event counts. See [Measurement](#measurement).
 - `GET /health` — `{"status":"ok"}`.
 - Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences` (capped at 4 per OpenAI's limit; over-cap requests are truncated and a `warn` log line emitted), `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
+- Thinking control plane: clients that omit the `thinking` request field have `thinking: {type: "disabled"}` injected on outbound (prevents reasoning-model upstreams from emitting `reasoning_content` that shim doesn't yet roundtrip — would otherwise 400 on tool-call continuations). Every injection increments `rewrites.thinking_disabled`. Clients that explicitly send `thinking: {type: "disabled"}` pass through identity. Clients that send `thinking: {type: "enabled"}` get a 501 — extended thinking roundtrip is Stage 2.6c; the `requests.thinking_enabled_seen` counter is the demand telemetry.
 - One adapter: **DeepSeek** (`https://api.deepseek.com/v1`, OpenAI-compatible endpoint).
 - Model mapping: Claude Code sends `claude-opus*`/`claude-sonnet*`/`claude-haiku*`; shim routes opus to `deepseek-v4-pro`, sonnet and haiku to `deepseek-v4-flash`. These are the only two values DeepSeek's [OpenAI-format chat-completions API](https://api-docs.deepseek.com/api/create-chat-completion) accepts as `model`. (The `deepseek-v4-pro[1m]` 1M-context variant shown in DeepSeek's [Claude Code guide](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code) only works on DeepSeek's native Anthropic endpoint, not the OpenAI-format one shim uses.) Override per role via `UPSTREAM_OPUS_MODEL` / `UPSTREAM_SONNET_MODEL` / `UPSTREAM_HAIKU_MODEL`. Non-claude-prefix names pass through unchanged unless `UPSTREAM_MODEL` is set as a catch-all. Every rewrite logs `info` and increments `rewrites.model` in `/v1/metrics`.
 - `shim run [args...]` launcher: locates `claude` on PATH, injects `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY=shim`, execs it, propagates exit code. Tested end-to-end with `claude --bare -p`.
@@ -62,7 +63,7 @@ No proxy needed.
 
 These all return a clear error — never silent forwarding.
 
-- **Extended thinking.** Requests containing `{"type": "thinking", ...}` content blocks return HTTP 501 with message `extended thinking not yet supported`.
+- **Extended thinking roundtrip.** Requests containing `{"type": "thinking", ...}` content blocks (assistant turn continuations) return HTTP 501. Requests with request-level `thinking: {type: "enabled"}` also return HTTP 501 — extended thinking lands in Stage 2.6c (gated on `requests.thinking_enabled_seen` showing real demand). See [Measurement](#measurement) for the counters.
 - **Prompt caching markers.** Not translated.
 - **Housekeeping short-circuits** (e.g. quota probes, title generation). Forwarded to upstream as normal traffic.
 - **Multiple adapters.** Only DeepSeek in Stage 0.
@@ -211,7 +212,8 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
     },
     "rewrites": {
         "model": 14,
-        "stop_sequences": 2
+        "stop_sequences": 2,
+        "thinking_disabled": 14
     },
     "requests_seen": {
         "/health": 5,
@@ -226,6 +228,9 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
             "class_5xx": 0,
             "by_status": {"400": 1}
         }
+    },
+    "requests": {
+        "thinking_enabled_seen": 0
     }
 }
 ```
@@ -246,6 +251,14 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
 - `rewrites.model` counts how often shim replaced the requested model name
   (Stage 0's DeepSeek adapter rewrites every request, so this matches
   `/v1/messages` `n`). `rewrites.stop_sequences` counts over-cap truncations.
+  `rewrites.thinking_disabled` counts implicit `thinking: {type: "disabled"}`
+  injections — shim's 2.6b default when the client omits the field. Clients
+  that explicitly send `thinking: {type: "disabled"}` are NOT counted here
+  (it's not a rewrite — the client requested it).
+- `requests.thinking_enabled_seen` counts inbound requests that carried
+  `thinking: {type: "enabled"}` (which today return 501). This is the
+  Stage 2.6c demand telemetry: if `> 0` after a week of real use, full
+  reasoning_content roundtrip ships; if `0`, L2 stays deferred.
 - `requests_seen.<path>` counts every handler entry — the denominator for
   any ratio operators want to compute (errors per request, rewrites per
   request, etc.). Increments before parsing or validation; counts all
