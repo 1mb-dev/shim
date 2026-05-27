@@ -19,6 +19,12 @@ func TestNew_EmptySnapshot(t *testing.T) {
 	if len(s.Rewrites) != 0 {
 		t.Errorf("expected empty rewrites, got %v", s.Rewrites)
 	}
+	if len(s.UpstreamErrors) != 0 {
+		t.Errorf("expected empty upstream_errors, got %v", s.UpstreamErrors)
+	}
+	if len(s.RequestsSeen) != 0 {
+		t.Errorf("expected empty requests_seen, got %v", s.RequestsSeen)
+	}
 }
 
 func TestRecordLatency_BelowReservoirCap(t *testing.T) {
@@ -232,6 +238,91 @@ func TestConcurrent_RecordAndSnapshot(t *testing.T) {
 	}
 	if got := s.Rewrites[RewriteModel]; got != wantTotal {
 		t.Errorf("rewrites = %d, want %d", got, wantTotal)
+	}
+}
+
+// TestRecordRequestSeen: cheap counter, per-endpoint isolation, accumulates.
+func TestRecordRequestSeen(t *testing.T) {
+	c := New()
+	c.RecordRequestSeen("/v1/messages")
+	c.RecordRequestSeen("/v1/messages")
+	c.RecordRequestSeen("/health")
+	s := c.Snapshot()
+	if got := s.RequestsSeen["/v1/messages"]; got != 2 {
+		t.Errorf("/v1/messages = %d, want 2", got)
+	}
+	if got := s.RequestsSeen["/health"]; got != 1 {
+		t.Errorf("/health = %d, want 1", got)
+	}
+}
+
+// TestRecordUpstreamError_ClassBuckets: 4xx and 5xx are bucketed; status
+// codes outside those ranges (3xx, 1xx, oddities) contribute to Total +
+// ByStatus only.
+func TestRecordUpstreamError_ClassBuckets(t *testing.T) {
+	c := New()
+	c.RecordUpstreamError("/v1/messages", 400)
+	c.RecordUpstreamError("/v1/messages", 429)
+	c.RecordUpstreamError("/v1/messages", 502)
+	c.RecordUpstreamError("/v1/messages", 502)
+	c.RecordUpstreamError("/v1/messages", 301) // odd: 3xx, not bucketed
+	s := c.Snapshot()
+	stats, ok := s.UpstreamErrors["/v1/messages"]
+	if !ok {
+		t.Fatal("endpoint not recorded")
+	}
+	if stats.Total != 5 {
+		t.Errorf("Total = %d, want 5", stats.Total)
+	}
+	if stats.Class4xx != 2 {
+		t.Errorf("Class4xx = %d, want 2 (400+429)", stats.Class4xx)
+	}
+	if stats.Class5xx != 2 {
+		t.Errorf("Class5xx = %d, want 2 (502+502)", stats.Class5xx)
+	}
+	if got := stats.ByStatus["400"]; got != 1 {
+		t.Errorf("ByStatus[400] = %d, want 1", got)
+	}
+	if got := stats.ByStatus["429"]; got != 1 {
+		t.Errorf("ByStatus[429] = %d, want 1", got)
+	}
+	if got := stats.ByStatus["502"]; got != 2 {
+		t.Errorf("ByStatus[502] = %d, want 2", got)
+	}
+	if got := stats.ByStatus["301"]; got != 1 {
+		t.Errorf("ByStatus[301] = %d, want 1 (3xx counted in ByStatus only)", got)
+	}
+}
+
+// TestRecordUpstreamError_PerEndpoint: errors against different endpoints
+// stay isolated.
+func TestRecordUpstreamError_PerEndpoint(t *testing.T) {
+	c := New()
+	c.RecordUpstreamError("/v1/messages", 502)
+	c.RecordUpstreamError("/v1/other", 400)
+	s := c.Snapshot()
+	if s.UpstreamErrors["/v1/messages"].Total != 1 {
+		t.Errorf("/v1/messages.Total = %d, want 1", s.UpstreamErrors["/v1/messages"].Total)
+	}
+	if s.UpstreamErrors["/v1/other"].Total != 1 {
+		t.Errorf("/v1/other.Total = %d, want 1", s.UpstreamErrors["/v1/other"].Total)
+	}
+	if s.UpstreamErrors["/v1/messages"].ByStatus["400"] != 0 {
+		t.Errorf("cross-endpoint leak: /v1/messages saw a 400")
+	}
+}
+
+// TestSnapshot_DeepCopiesByStatus: mutating a returned ByStatus map must
+// not leak back to the collector. Same invariant as TestSnapshot_IsACopy
+// for rewrites, applied to the nested map.
+func TestSnapshot_DeepCopiesByStatus(t *testing.T) {
+	c := New()
+	c.RecordUpstreamError("/v1/messages", 400)
+	s1 := c.Snapshot()
+	s1.UpstreamErrors["/v1/messages"].ByStatus["400"] = 999
+	s2 := c.Snapshot()
+	if got := s2.UpstreamErrors["/v1/messages"].ByStatus["400"]; got != 1 {
+		t.Errorf("ByStatus mutation leaked: got %d, want 1", got)
 	}
 }
 

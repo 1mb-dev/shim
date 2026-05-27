@@ -197,9 +197,11 @@ func (h *Harness) waitHealthy(timeout time.Duration) error {
 // MetricsSnapshot is the parsed /v1/metrics view used for delta
 // assertions across test cases sharing a shim process.
 type MetricsSnapshot struct {
-	Latency  map[string]LatencyStats
-	Tokens   map[string]TokenStats
-	Rewrites map[string]int
+	Latency        map[string]LatencyStats
+	Tokens         map[string]TokenStats
+	Rewrites       map[string]int
+	UpstreamErrors map[string]UpstreamErrorStats
+	RequestsSeen   map[string]int
 }
 
 // LatencyStats mirrors measure.LatencyStats with N as the count of
@@ -215,6 +217,15 @@ type TokenStats struct {
 	UpstreamPromptTotal     int
 	UpstreamCompletionTotal int
 	N                       int
+}
+
+// UpstreamErrorStats mirrors measure.UpstreamErrorStats. ByStatus keys
+// are stringified status codes ("400", "502", ...).
+type UpstreamErrorStats struct {
+	Total    int
+	Class4xx int
+	Class5xx int
+	ByStatus map[string]int
 }
 
 // Metrics fetches and parses /v1/metrics. Fails the test on error.
@@ -238,15 +249,24 @@ func (h *Harness) Metrics() *MetricsSnapshot {
 			UpstreamCompletionTotal int `json:"upstream_completion_total"`
 			N                       int `json:"n"`
 		} `json:"token_delta"`
-		Rewrites map[string]int `json:"rewrites"`
+		Rewrites       map[string]int `json:"rewrites"`
+		UpstreamErrors map[string]struct {
+			Total    int            `json:"total"`
+			Class4xx int            `json:"class_4xx"`
+			Class5xx int            `json:"class_5xx"`
+			ByStatus map[string]int `json:"by_status"`
+		} `json:"upstream_errors"`
+		RequestsSeen map[string]int `json:"requests_seen"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		h.t.Fatalf("metrics decode: %v", err)
 	}
 	snap := &MetricsSnapshot{
-		Latency:  make(map[string]LatencyStats, len(raw.Latency)),
-		Tokens:   make(map[string]TokenStats, len(raw.Tokens)),
-		Rewrites: raw.Rewrites,
+		Latency:        make(map[string]LatencyStats, len(raw.Latency)),
+		Tokens:         make(map[string]TokenStats, len(raw.Tokens)),
+		Rewrites:       raw.Rewrites,
+		UpstreamErrors: make(map[string]UpstreamErrorStats, len(raw.UpstreamErrors)),
+		RequestsSeen:   raw.RequestsSeen,
 	}
 	for k, v := range raw.Latency {
 		snap.Latency[k] = LatencyStats{P50: v.P50, P95: v.P95, P99: v.P99, N: v.N}
@@ -257,6 +277,14 @@ func (h *Harness) Metrics() *MetricsSnapshot {
 			UpstreamPromptTotal:     v.UpstreamPromptTotal,
 			UpstreamCompletionTotal: v.UpstreamCompletionTotal,
 			N:                       v.N,
+		}
+	}
+	for k, v := range raw.UpstreamErrors {
+		snap.UpstreamErrors[k] = UpstreamErrorStats{
+			Total:    v.Total,
+			Class4xx: v.Class4xx,
+			Class5xx: v.Class5xx,
+			ByStatus: v.ByStatus,
 		}
 	}
 	return snap

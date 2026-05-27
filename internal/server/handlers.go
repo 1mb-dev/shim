@@ -22,6 +22,7 @@ const maxStopSequences = 4
 // handleHealth — GET /health → {"status":"ok"}.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	start := time.Now()
+	s.measure.RecordRequestSeen("/health")
 	defer func() { s.measure.RecordLatency("/health", time.Since(start)) }()
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -32,6 +33,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // section documents the wire shape and the no-auth implication.
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	start := time.Now()
+	s.measure.RecordRequestSeen("/v1/metrics")
 	defer func() { s.measure.RecordLatency("/v1/metrics", time.Since(start)) }()
 
 	snap := s.measure.Snapshot()
@@ -137,6 +139,7 @@ func extractText(raw json.RawMessage) (string, bool) {
 // with redacted attrs.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	s.measure.RecordRequestSeen("/v1/messages")
 	defer func() { s.measure.RecordLatency("/v1/messages", time.Since(start)) }()
 	body, err := s.readBody(r, w)
 	if err != nil {
@@ -207,7 +210,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	normalised, err := s.adapter.NormalizeResponse(upstream)
 	if err != nil {
-		s.writeUpstreamError(w, upstream.StatusCode, normalised, err)
+		s.writeUpstreamError(w, "/v1/messages", upstream.StatusCode, normalised, err)
 		return
 	}
 
@@ -246,6 +249,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 // caveat (DeepSeek's actual tokenizer is not published).
 func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	s.measure.RecordRequestSeen("/v1/messages/count_tokens")
 	defer func() { s.measure.RecordLatency("/v1/messages/count_tokens", time.Since(start)) }()
 
 	body, err := s.readBody(r, w)
@@ -294,8 +298,11 @@ func (s *Server) readBody(r *http.Request, w http.ResponseWriter) ([]byte, error
 
 // writeUpstreamError translates a non-2xx upstream response into the right
 // Anthropic-shaped error class. The upstream body is NOT echoed (it can
-// contain prompt content or other sensitive material).
-func (s *Server) writeUpstreamError(w http.ResponseWriter, upstreamStatus int, _ []byte, err error) {
+// contain prompt content or other sensitive material). endpoint is the
+// shim-side endpoint that initiated the upstream call (e.g. "/v1/messages")
+// — used to bucket the error in /v1/metrics' upstream_errors aggregate.
+func (s *Server) writeUpstreamError(w http.ResponseWriter, endpoint string, upstreamStatus int, _ []byte, err error) {
+	s.measure.RecordUpstreamError(endpoint, upstreamStatus)
 	switch {
 	case upstreamStatus == http.StatusUnauthorized || upstreamStatus == http.StatusForbidden:
 		writeError(w, s.log, http.StatusUnauthorized, errAuthentication,

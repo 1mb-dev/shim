@@ -15,6 +15,7 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -34,11 +35,13 @@ const reservoirCap = 1024
 // Collector aggregates measurements across goroutines. All public methods
 // are safe to call concurrently; percentile compute is deferred to Snapshot.
 type Collector struct {
-	mu       sync.Mutex
-	latency  map[string]*reservoir
-	tokens   map[string]*tokenAggregate
-	rewrites map[string]int
-	rng      *rand.Rand
+	mu             sync.Mutex
+	latency        map[string]*reservoir
+	tokens         map[string]*tokenAggregate
+	rewrites       map[string]int
+	upstreamErrors map[string]*upstreamErrorAgg
+	requestsSeen   map[string]int
+	rng            *rand.Rand
 }
 
 // New returns an empty Collector. The reservoir RNG is seeded from
@@ -46,10 +49,12 @@ type Collector struct {
 // own and replace the rng field via tests (same-package access).
 func New() *Collector {
 	return &Collector{
-		latency:  map[string]*reservoir{},
-		tokens:   map[string]*tokenAggregate{},
-		rewrites: map[string]int{},
-		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		latency:        map[string]*reservoir{},
+		tokens:         map[string]*tokenAggregate{},
+		rewrites:       map[string]int{},
+		upstreamErrors: map[string]*upstreamErrorAgg{},
+		requestsSeen:   map[string]int{},
+		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -100,6 +105,38 @@ func (c *Collector) RecordRewriteEvent(kind string) {
 	c.rewrites[kind]++
 }
 
+// RecordRequestSeen increments the per-endpoint request counter. Called
+// at handler entry, before any parsing or validation. The denominator
+// for any per-endpoint ratio (errors/seen, rewrites/seen) operators want
+// to compute from /v1/metrics.
+func (c *Collector) RecordRequestSeen(endpoint string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requestsSeen[endpoint]++
+}
+
+// RecordUpstreamError records a non-2xx response from the upstream. status
+// is the upstream's HTTP code (e.g., 400, 502, 429). Aggregated by class
+// (4xx/5xx) and per-status for drill-down. Operators read both to answer
+// "what's failing" without reading raw logs.
+func (c *Collector) RecordUpstreamError(endpoint string, status int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	a := c.upstreamErrors[endpoint]
+	if a == nil {
+		a = &upstreamErrorAgg{byStatus: map[int]int{}}
+		c.upstreamErrors[endpoint] = a
+	}
+	a.total++
+	switch {
+	case status >= 400 && status < 500:
+		a.class4xx++
+	case status >= 500 && status < 600:
+		a.class5xx++
+	}
+	a.byStatus[status]++
+}
+
 // Snapshot returns a point-in-time view of all aggregates with percentiles
 // computed from current reservoir state. Returned maps are copies; callers
 // can mutate freely.
@@ -107,9 +144,11 @@ func (c *Collector) Snapshot() Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	snap := Snapshot{
-		Latency:  make(map[string]LatencyStats, len(c.latency)),
-		Tokens:   make(map[string]TokenStats, len(c.tokens)),
-		Rewrites: make(map[string]int, len(c.rewrites)),
+		Latency:        make(map[string]LatencyStats, len(c.latency)),
+		Tokens:         make(map[string]TokenStats, len(c.tokens)),
+		Rewrites:       make(map[string]int, len(c.rewrites)),
+		UpstreamErrors: make(map[string]UpstreamErrorStats, len(c.upstreamErrors)),
+		RequestsSeen:   make(map[string]int, len(c.requestsSeen)),
 	}
 	for ep, r := range c.latency {
 		snap.Latency[ep] = LatencyStats{
@@ -130,6 +169,21 @@ func (c *Collector) Snapshot() Snapshot {
 	for k, v := range c.rewrites {
 		snap.Rewrites[k] = v
 	}
+	for ep, a := range c.upstreamErrors {
+		byStatus := make(map[string]int, len(a.byStatus))
+		for code, n := range a.byStatus {
+			byStatus[strconv.Itoa(code)] = n
+		}
+		snap.UpstreamErrors[ep] = UpstreamErrorStats{
+			Total:    a.total,
+			Class4xx: a.class4xx,
+			Class5xx: a.class5xx,
+			ByStatus: byStatus,
+		}
+	}
+	for k, v := range c.requestsSeen {
+		snap.RequestsSeen[k] = v
+	}
 	return snap
 }
 
@@ -137,9 +191,23 @@ func (c *Collector) Snapshot() Snapshot {
 // The wire shape is committed in todos/shim-stage1-plan.md §1 step 6;
 // breaking changes need a CHANGELOG entry.
 type Snapshot struct {
-	Latency  map[string]LatencyStats `json:"latency"`
-	Tokens   map[string]TokenStats   `json:"token_delta"`
-	Rewrites map[string]int          `json:"rewrites"`
+	Latency        map[string]LatencyStats       `json:"latency"`
+	Tokens         map[string]TokenStats         `json:"token_delta"`
+	Rewrites       map[string]int                `json:"rewrites"`
+	UpstreamErrors map[string]UpstreamErrorStats `json:"upstream_errors"`
+	RequestsSeen   map[string]int                `json:"requests_seen"`
+}
+
+// UpstreamErrorStats reports counts of upstream non-2xx responses per
+// endpoint. ByStatus keys are stringified codes ("400", "502", ...) so the
+// JSON shape is canonical; Total = Class4xx + Class5xx for status codes
+// in the standard error ranges (3xx and oddities are counted only in
+// Total + ByStatus).
+type UpstreamErrorStats struct {
+	Total    int            `json:"total"`
+	Class4xx int            `json:"class_4xx"`
+	Class5xx int            `json:"class_5xx"`
+	ByStatus map[string]int `json:"by_status"`
 }
 
 // LatencyStats reports percentiles in milliseconds. N is total observations
@@ -189,6 +257,13 @@ type tokenAggregate struct {
 	upstreamPromptTotal     int
 	upstreamCompletionTotal int
 	n                       int
+}
+
+type upstreamErrorAgg struct {
+	total    int
+	class4xx int
+	class5xx int
+	byStatus map[int]int
 }
 
 // percentile returns the p-th percentile of samples (p in [0, 100]) using

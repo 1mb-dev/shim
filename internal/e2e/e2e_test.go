@@ -148,6 +148,12 @@ func TestE2E_HappyNonStream(t *testing.T) {
 		if d := after.Rewrites["model"] - before.Rewrites["model"]; d != 1 {
 			t.Errorf("rewrites.model delta = %d, want 1 (claude-sonnet-4-6 → deepseek-v4-flash)", d)
 		}
+		// Stage 2.5b: requests_seen denominator. handleMessages + the
+		// implicit /v1/metrics call h.Metrics makes both increment;
+		// assert the /v1/messages delta in isolation.
+		if d := after.RequestsSeen["/v1/messages"] - before.RequestsSeen["/v1/messages"]; d != 1 {
+			t.Errorf("requests_seen[/v1/messages] delta = %d, want 1", d)
+		}
 	})
 }
 
@@ -305,10 +311,19 @@ func TestE2E_Upstream400Becomes502(t *testing.T) {
 			t.Errorf("stderr missing 'upstream status 400' detail")
 		}
 
-		// Assertion D: known gap — upstream errors are NOT counted in
-		// /v1/metrics today. This is the Stage 2.5b finding Jordan flagged.
-		// Recorded here as a TODO via t.Log so future shape changes surface.
-		t.Log("KNOWN GAP: /v1/metrics has no upstream-error counter (file as stage 2.5b)")
+		// Assertion D: upstream_errors counter incremented for status 400.
+		// Stage 2.5b: previously a t.Log gap; now a hard assertion.
+		after := h.Metrics()
+		stats := after.UpstreamErrors["/v1/messages"]
+		if stats.Total < 1 {
+			t.Errorf("upstream_errors total = %d, want >=1", stats.Total)
+		}
+		if stats.Class4xx < 1 {
+			t.Errorf("upstream_errors class_4xx = %d, want >=1", stats.Class4xx)
+		}
+		if got := stats.ByStatus["400"]; got < 1 {
+			t.Errorf("upstream_errors.by_status[400] = %d, want >=1", got)
+		}
 	})
 }
 
