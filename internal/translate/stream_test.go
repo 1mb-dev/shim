@@ -107,6 +107,55 @@ func TestToAnthropicSSE_ToolCall(t *testing.T) {
 	}
 }
 
+// TestToAnthropicSSE_Thinking — Stage 2.6c. Reasoning content emits a
+// thinking content block in the SSE stream: content_block_start (empty
+// thinking + empty sig), thinking_delta (text), signature_delta (constant
+// sig), content_block_stop. Block ordering: thinking precedes text.
+func TestToAnthropicSSE_Thinking(t *testing.T) {
+	resp := &OpenAIResponse{
+		ID: "chat-3", Model: "deepseek-v4-pro",
+		Choices: []OpenAIChoice{{
+			Message: OpenAIMessage{
+				Role:             "assistant",
+				Content:          json.RawMessage(`"final answer"`),
+				ReasoningContent: "let me think...",
+			},
+			FinishReason: "stop",
+		}},
+		Usage: OpenAIUsage{PromptTokens: 7, CompletionTokens: 3},
+	}
+	events, err := ToAnthropicSSE(resp, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Thinking block (3 events: start, thinking_delta, signature_delta) +
+	// content_block_stop. Then text block (3 events: start, delta, stop).
+	// Bookends: message_start, message_delta, message_stop. = 11 events.
+	want := []string{
+		"message_start",
+		"content_block_start", "content_block_delta", "content_block_delta", "content_block_stop",
+		"content_block_start", "content_block_delta", "content_block_stop",
+		"message_delta", "message_stop",
+	}
+	got := eventNames(events)
+	if !sameStrings(got, want) {
+		t.Fatalf("events = %v\nwant %v", got, want)
+	}
+	// Thinking block first (ordering invariant).
+	cbs0 := events[1].Data.(sseContentBlockStart)
+	if cbs0.ContentBlock.Type != "thinking" {
+		t.Errorf("block[0] type = %q, want thinking", cbs0.ContentBlock.Type)
+	}
+	td := events[2].Data.(sseContentBlockDelta)
+	if td.Delta.Type != "thinking_delta" || td.Delta.Thinking != "let me think..." {
+		t.Errorf("thinking_delta = %+v", td.Delta)
+	}
+	sd := events[3].Data.(sseContentBlockDelta)
+	if sd.Delta.Type != "signature_delta" || sd.Delta.Signature != "shim-passthrough-v1" {
+		t.Errorf("signature_delta = %+v", sd.Delta)
+	}
+}
+
 func TestToAnthropicSSE_EmptyContent(t *testing.T) {
 	// Empty assistant content collapses to a single empty text block per
 	// messageToBlocks; the SSE sequence must still produce the canonical 6

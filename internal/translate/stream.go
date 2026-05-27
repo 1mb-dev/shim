@@ -45,9 +45,11 @@ type sseContentBlockDelta struct {
 }
 
 type sseDelta struct {
-	Type        string `json:"type"` // "text_delta" | "input_json_delta"
+	Type        string `json:"type"` // "text_delta" | "input_json_delta" | "thinking_delta" | "signature_delta"
 	Text        string `json:"text,omitempty"`
 	PartialJSON string `json:"partial_json,omitempty"`
+	Thinking    string `json:"thinking,omitempty"`  // for thinking_delta (Stage 2.6c)
+	Signature   string `json:"signature,omitempty"` // for signature_delta (Stage 2.6c)
 }
 
 type sseContentBlockStop struct {
@@ -152,6 +154,33 @@ func ToAnthropicSSE(resp *OpenAIResponse, originalModel string) ([]SSEEvent, err
 				Data: sseContentBlockDelta{
 					Type: "content_block_delta", Index: i,
 					Delta: sseDelta{Type: "input_json_delta", PartialJSON: args},
+				},
+			})
+		case "thinking":
+			// Stage 2.6c — Anthropic's streaming protocol for thinking:
+			// content_block_start carries empty thinking + empty signature;
+			// thinking_delta carries text chunks (one chunk here, since
+			// shim is buffer-then-restream); signature_delta carries the
+			// signature; content_block_stop closes the block.
+			events = append(events, SSEEvent{
+				Name: "content_block_start",
+				Data: sseContentBlockStart{
+					Type: "content_block_start", Index: i,
+					ContentBlock: AnthropicBlock{Type: "thinking"},
+				},
+			})
+			events = append(events, SSEEvent{
+				Name: "content_block_delta",
+				Data: sseContentBlockDelta{
+					Type: "content_block_delta", Index: i,
+					Delta: sseDelta{Type: "thinking_delta", Thinking: b.Thinking},
+				},
+			})
+			events = append(events, SSEEvent{
+				Name: "content_block_delta",
+				Data: sseContentBlockDelta{
+					Type: "content_block_delta", Index: i,
+					Delta: sseDelta{Type: "signature_delta", Signature: b.Signature},
 				},
 			})
 		default:
