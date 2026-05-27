@@ -77,14 +77,19 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 // Addr returns the bind address the server will listen on.
 func (s *Server) Addr() string { return s.http.Addr }
 
-// Start blocks serving HTTP until the server is shut down. Logs a single
-// "shim listening" line once the listener is up.
+// Start blocks serving HTTP until the server is shut down. Listens
+// first, then logs the actually-bound addr (matters when PORT=0 picks
+// an ephemeral port — thesis-1: don't lie about what we did).
 func (s *Server) Start() error {
+	ln, err := net.Listen("tcp", s.http.Addr)
+	if err != nil {
+		return err
+	}
 	s.log.Info("shim listening",
-		slog.String("addr", s.http.Addr),
+		slog.String("addr", ln.Addr().String()),
 		slog.String("adapter", s.adapter.Name()),
 	)
-	if err := s.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := s.http.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
