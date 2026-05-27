@@ -69,15 +69,13 @@ func AnthropicToOpenAI(req *AnthropicRequest) (*OpenAIRequest, error) {
 		return nil, err
 	}
 
-	// Thinking control plane (Stage 2.6b). When client omits the field,
-	// shim sends thinking=disabled to upstream — reverses the silent
-	// default-enabled behavior that broke tool-call continuations on
-	// reasoning-model upstreams. When client explicitly sends
-	// thinking=disabled, pass through identity. The thinking=enabled case
-	// never reaches the translator (handler short-circuits at 501).
-	if req.Thinking == nil {
-		out.Thinking = &DeepSeekThinkingConfig{Type: "disabled"}
-	} else {
+	// Thinking control plane (Stage 2.6c). Pass req.Thinking through
+	// identity — when client omits, no thinking field on outbound (DeepSeek
+	// ignores thinking=disabled on v4-pro anyway, so the 2.6b inject was
+	// dead weight). When client sends thinking, forward it; reasoning
+	// content roundtrips via OpenAIMessage.ReasoningContent ↔ Anthropic
+	// thinking blocks (see assistantBlocksToMessages + messageToBlocks).
+	if req.Thinking != nil {
 		out.Thinking = &DeepSeekThinkingConfig{Type: req.Thinking.Type}
 	}
 
@@ -263,6 +261,7 @@ func userBlocksToMessages(blocks []AnthropicBlock) ([]OpenAIMessage, error) {
 func assistantBlocksToMessages(blocks []AnthropicBlock) ([]OpenAIMessage, error) {
 	msg := OpenAIMessage{Role: "assistant"}
 	var textParts []string
+	var thinkingParts []string
 
 	for i, b := range blocks {
 		switch b.Type {
@@ -275,7 +274,11 @@ func assistantBlocksToMessages(blocks []AnthropicBlock) ([]OpenAIMessage, error)
 			}
 			msg.ToolCalls = append(msg.ToolCalls, tc)
 		case "thinking":
-			return nil, fmt.Errorf("blocks[%d]: thinking blocks not supported", i)
+			// Stage 2.6c: signature is discarded — DeepSeek doesn't accept
+			// it and shim doesn't verify on roundtrip (constant string;
+			// loopback threat model). Multiple thinking blocks concatenate
+			// per the Anthropic spec; rare but the contract allows it.
+			thinkingParts = append(thinkingParts, b.Thinking)
 		default:
 			return nil, fmt.Errorf("blocks[%d]: unknown assistant type %q", i, b.Type)
 		}
@@ -284,6 +287,9 @@ func assistantBlocksToMessages(blocks []AnthropicBlock) ([]OpenAIMessage, error)
 	if len(textParts) > 0 {
 		raw, _ := json.Marshal(strings.Join(textParts, "\n"))
 		msg.Content = raw
+	}
+	if len(thinkingParts) > 0 {
+		msg.ReasoningContent = strings.Join(thinkingParts, "\n")
 	}
 	return []OpenAIMessage{msg}, nil
 }
@@ -312,10 +318,24 @@ func imageBlockToPart(b AnthropicBlock) (OpenAIContentPart, error) {
 }
 
 // messageToBlocks reconstructs Anthropic content blocks from an OpenAI
-// assistant message. Tool calls become tool_use blocks; text content becomes
-// a single text block.
+// assistant message. Stage 2.6c block ordering: thinking first, then text,
+// then tool_use — per Anthropic's contract that thinking precedes tool_use
+// in assistant turns. Constant signature "shim-passthrough-v1" — shim
+// doesn't verify on roundtrip (clients pass it back opaquely; DeepSeek
+// ignores the field). See README "Errors and debugging" for the
+// no-verification posture rationale.
 func messageToBlocks(m OpenAIMessage) ([]AnthropicBlock, error) {
 	var blocks []AnthropicBlock
+
+	// Thinking block first (Stage 2.6c). Skip if empty — don't emit zero-
+	// content thinking blocks just because the field exists.
+	if m.ReasoningContent != "" {
+		blocks = append(blocks, AnthropicBlock{
+			Type:      "thinking",
+			Thinking:  m.ReasoningContent,
+			Signature: thinkingSignature,
+		})
+	}
 
 	// Text content can be a JSON string or null/omitted.
 	if len(m.Content) > 0 && string(m.Content) != "null" {
@@ -344,6 +364,15 @@ func messageToBlocks(m OpenAIMessage) ([]AnthropicBlock, error) {
 	}
 	return blocks, nil
 }
+
+// thinkingSignature is the constant string shim attaches to every emitted
+// thinking block. Anthropic's signature semantic is "opaque to clients;
+// server-validated on roundtrip" — shim is the server in this loop, and
+// the loopback threat model + non-verified-on-egress posture make HMAC
+// theater unnecessary. Clients pass this back unchanged; DeepSeek discards
+// the field entirely. See README "Errors and debugging" for the design
+// rationale (so a future reader doesn't add HMAC back as "fix the gap").
+const thinkingSignature = "shim-passthrough-v1"
 
 // flattenAssistantContent collapses an OpenAI assistant content (which can
 // be a string or an array of parts) into a single text string. For the

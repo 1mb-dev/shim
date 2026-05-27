@@ -158,18 +158,24 @@ func (f *FakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(next.Body)
 }
 
-// violatesToolContinuationContract returns true when the request has
-// tool_calls in any assistant message of `messages` AND thinking is not
-// explicitly disabled. See EnforceToolContinuationContract for the proxy
-// semantics — this is NOT a faithful model of DeepSeek's actual rule.
+// violatesToolContinuationContract returns true when the request would
+// trigger DeepSeek's "reasoning_content required on tool continuations in
+// thinking mode" rule. Stage 2.6c rule (more accurate than 2.6b's proxy):
+// thinking is active (not explicitly disabled) AND a prior assistant turn
+// has tool_calls AND that turn lacks reasoning_content. Models the
+// upstream's actual contract: when the model reasoned and used a tool,
+// the reasoning must be passed back so the continuation can resume that
+// reasoning state. This is still a PROXY, not a faithful emulator —
+// real DeepSeek may apply additional rules — but it's accurate enough to
+// be a regression fence for the Stage 2.6b/2.6c bug class.
 func violatesToolContinuationContract(body map[string]any) bool {
-	thinkingDisabled := false
+	thinkingActive := true
 	if t, ok := body["thinking"].(map[string]any); ok {
 		if v, ok := t["type"].(string); ok && v == "disabled" {
-			thinkingDisabled = true
+			thinkingActive = false
 		}
 	}
-	if thinkingDisabled {
+	if !thinkingActive {
 		return false
 	}
 	msgs, ok := body["messages"].([]any)
@@ -184,7 +190,12 @@ func violatesToolContinuationContract(body map[string]any) bool {
 		if mm["role"] != "assistant" {
 			continue
 		}
-		if tcs, ok := mm["tool_calls"].([]any); ok && len(tcs) > 0 {
+		tcs, hasTCs := mm["tool_calls"].([]any)
+		if !hasTCs || len(tcs) == 0 {
+			continue
+		}
+		rc, _ := mm["reasoning_content"].(string)
+		if rc == "" {
 			return true
 		}
 	}

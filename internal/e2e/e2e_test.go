@@ -517,24 +517,23 @@ func pidAlive(pid int) bool {
 	}
 }
 
-// ---- Stage 2.6b regression: tool-call continuation no longer 400s ----
-// Named per Jordan's huddle ask. Pre-2.6b: this test fails because shim
-// forwards no thinking field, fake stub (with contract on) 400s on the
-// tool-call continuation, shim translates to 502. Post-2.6b: shim
-// auto-injects thinking={type:disabled}, stub sees disabled, 200s.
-//
-// The fixture is a 2-turn conversation: turn 1 user prompt → assistant
-// returns a tool_call (canned). Turn 2 sends the assistant turn + a
-// tool_result back; this is the call that historically 400d. Asserts:
-// 200, rewrites.thinking_disabled >= 2 (one per request), no
-// upstream_errors logged.
+// ---- Stage 2.6c regression: reasoning_content ↔ thinking-block roundtrip ----
+// Replaces the 2.6b TestE2E_ToolContinuation_NoLongerTriggers400. That
+// test's 2.6b invariant ("shim injects thinking=disabled to dodge the
+// contract") died when 2.6c removed the inject. The 2.6c invariant: shim
+// translates DeepSeek's reasoning_content into Anthropic thinking blocks
+// on the response, then back to reasoning_content on continuation —
+// satisfying DeepSeek's "reasoning_content required on tool continuations
+// in thinking mode" contract via roundtrip, not via bypass.
 
-func TestE2E_ToolContinuation_NoLongerTriggers400(t *testing.T) {
+func TestE2E_ReasoningRoundtrip_3Turn(t *testing.T) {
 	withBudget(t, perCaseBudget, func() {
 		h := Start(t)
 		h.Upstream.EnforceToolContinuationContract(true)
 
-		// Turn 1: simulate DeepSeek emitting a tool_call response.
+		// Turn 1: stub emits a tool_call WITH reasoning_content (DeepSeek
+		// v4-pro shape — reasoning model that uses tools also emits its
+		// reasoning).
 		h.Upstream.SetNext(CannedResponse{
 			Status: 200,
 			Body: map[string]any{
@@ -545,8 +544,9 @@ func TestE2E_ToolContinuation_NoLongerTriggers400(t *testing.T) {
 				"choices": []map[string]any{{
 					"index": 0,
 					"message": map[string]any{
-						"role":    "assistant",
-						"content": nil,
+						"role":              "assistant",
+						"content":           nil,
+						"reasoning_content": "the user wants weather; i should call get_weather",
 						"tool_calls": []map[string]any{{
 							"id":   "call_1",
 							"type": "function",
@@ -562,12 +562,11 @@ func TestE2E_ToolContinuation_NoLongerTriggers400(t *testing.T) {
 			},
 		})
 
-		before := h.Metrics()
-
-		// Turn 1 request.
+		// Turn 1 request — opt-in to thinking.
 		status, body := postJSON(t, h.URL+"/v1/messages", map[string]any{
 			"model":      "claude-opus-4-7",
 			"max_tokens": 50,
+			"thinking":   map[string]any{"type": "enabled"},
 			"tools": []map[string]any{{
 				"name":         "get_weather",
 				"description":  "Returns weather",
@@ -581,12 +580,44 @@ func TestE2E_ToolContinuation_NoLongerTriggers400(t *testing.T) {
 			t.Fatalf("turn 1 status=%d body=%s", status, body)
 		}
 
-		// Turn 2: send assistant tool_use + user tool_result back. This is
-		// the request shape that pre-2.6b would 400 under the stub's
-		// contract (because thinking wasn't being disabled on outbound).
+		// Parse turn 1 response — must include thinking block (with constant
+		// signature) and tool_use block, in that order.
+		var turn1Resp struct {
+			Content []struct {
+				Type      string `json:"type"`
+				Thinking  string `json:"thinking,omitempty"`
+				Signature string `json:"signature,omitempty"`
+				ID        string `json:"id,omitempty"`
+				Name      string `json:"name,omitempty"`
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(body, &turn1Resp); err != nil {
+			t.Fatalf("turn 1 unmarshal: %v", err)
+		}
+		if len(turn1Resp.Content) < 2 {
+			t.Fatalf("turn 1 expected >=2 blocks, got %d: %+v", len(turn1Resp.Content), turn1Resp.Content)
+		}
+		if turn1Resp.Content[0].Type != "thinking" {
+			t.Errorf("turn 1 block[0].type = %q, want thinking (ordering invariant)", turn1Resp.Content[0].Type)
+		}
+		if turn1Resp.Content[0].Signature != "shim-passthrough-v1" {
+			t.Errorf("turn 1 thinking signature = %q, want constant sig", turn1Resp.Content[0].Signature)
+		}
+		if !strings.Contains(turn1Resp.Content[0].Thinking, "should call get_weather") {
+			t.Errorf("turn 1 thinking text missing: %q", turn1Resp.Content[0].Thinking)
+		}
+
+		before := h.Metrics()
+
+		// Turn 2: send the assistant's thinking + tool_use back along with a
+		// tool_result. This is the request that pre-2.6c (with stub contract
+		// enforcement) would 400. Post-2.6c: shim translates the thinking
+		// block to reasoning_content; stub sees it on the prior assistant
+		// turn, contract satisfied, returns 200.
 		status, body = postJSON(t, h.URL+"/v1/messages", map[string]any{
 			"model":      "claude-opus-4-7",
 			"max_tokens": 50,
+			"thinking":   map[string]any{"type": "enabled"},
 			"tools": []map[string]any{{
 				"name":         "get_weather",
 				"description":  "Returns weather",
@@ -594,12 +625,10 @@ func TestE2E_ToolContinuation_NoLongerTriggers400(t *testing.T) {
 			}},
 			"messages": []map[string]any{
 				{"role": "user", "content": "what's the weather in SF?"},
-				{"role": "assistant", "content": []map[string]any{{
-					"type":  "tool_use",
-					"id":    "call_1",
-					"name":  "get_weather",
-					"input": map[string]any{"city": "SF"},
-				}}},
+				{"role": "assistant", "content": []map[string]any{
+					{"type": "thinking", "thinking": "the user wants weather; i should call get_weather", "signature": "shim-passthrough-v1"},
+					{"type": "tool_use", "id": "call_1", "name": "get_weather", "input": map[string]any{"city": "SF"}},
+				}},
 				{"role": "user", "content": []map[string]any{{
 					"type":        "tool_result",
 					"tool_use_id": "call_1",
@@ -608,14 +637,10 @@ func TestE2E_ToolContinuation_NoLongerTriggers400(t *testing.T) {
 			},
 		})
 		if status != 200 {
-			t.Fatalf("turn 2 status=%d body=%s — the very 400 Stage 2.6b should prevent", status, body)
+			t.Fatalf("turn 2 status=%d body=%s — reasoning roundtrip should satisfy stub's contract", status, body)
 		}
 
 		after := h.Metrics()
-		dThinking := after.Rewrites["thinking_disabled"] - before.Rewrites["thinking_disabled"]
-		if dThinking < 2 {
-			t.Errorf("rewrites.thinking_disabled delta = %d, want >= 2 (one per request)", dThinking)
-		}
 		dErr := 0
 		if a, ok := after.UpstreamErrors["/v1/messages"]; ok {
 			dErr += a.Total
@@ -624,7 +649,60 @@ func TestE2E_ToolContinuation_NoLongerTriggers400(t *testing.T) {
 			dErr -= b.Total
 		}
 		if dErr != 0 {
-			t.Errorf("upstream_errors total delta = %d, want 0", dErr)
+			t.Errorf("upstream_errors total delta = %d, want 0 (reasoning roundtrip should prevent stub 400)", dErr)
+		}
+	})
+}
+
+// TestE2E_ThinkingMissing_StubEnforces400 — defensive fence proving the
+// stub's tool-continuation contract actually fires when reasoning_content
+// is missing. Without this, a translator bug that silently drops the
+// thinking block would still pass TestE2E_ReasoningRoundtrip_3Turn (the
+// 200 would arrive from the stub's default path, not from contract
+// satisfaction). This test sends the broken-pre-2.6c request shape
+// (assistant turn has tool_calls but no thinking history) and asserts
+// the stub 400s — confirms the regression fence is actually fencing.
+
+func TestE2E_ThinkingMissing_StubEnforces400(t *testing.T) {
+	withBudget(t, perCaseBudget, func() {
+		h := Start(t)
+		h.Upstream.EnforceToolContinuationContract(true)
+
+		// Single-turn request that has tool_calls in assistant history but
+		// no thinking block. With thinking enabled (default contract path),
+		// stub's proxy should 400.
+		status, body := postJSON(t, h.URL+"/v1/messages", map[string]any{
+			"model":      "claude-opus-4-7",
+			"max_tokens": 50,
+			"thinking":   map[string]any{"type": "enabled"},
+			"tools": []map[string]any{{
+				"name":         "get_weather",
+				"description":  "Returns weather",
+				"input_schema": map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}},
+			}},
+			"messages": []map[string]any{
+				{"role": "user", "content": "what's the weather?"},
+				{"role": "assistant", "content": []map[string]any{
+					{"type": "tool_use", "id": "call_1", "name": "get_weather", "input": map[string]any{"city": "SF"}},
+				}},
+				{"role": "user", "content": []map[string]any{{
+					"type":        "tool_result",
+					"tool_use_id": "call_1",
+					"content":     "sunny",
+				}}},
+			},
+		})
+		if status != 502 {
+			t.Errorf("status = %d, want 502 (stub should 400, shim translates to 502)", status)
+		}
+		// Stage 2.6 design: shim does not echo upstream error bodies to
+		// the client (potential prompt content). The diagnostic detail
+		// lives in shim's stderr `upstream error` log line's body_preview
+		// field — verify there.
+		_ = body
+		stderr := h.Stderr()
+		if !strings.Contains(stderr, "reasoning_content") {
+			t.Errorf("stderr's upstream error body_preview should surface the contract reason: %s", stderr)
 		}
 	})
 }

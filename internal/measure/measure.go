@@ -23,9 +23,8 @@ import (
 // Rewrite event kinds. Adding a new kind = add a constant here + wire the
 // call site + extend the rewrites table in README.
 const (
-	RewriteModel            = "model"
-	RewriteStopSequences    = "stop_sequences"
-	RewriteThinkingDisabled = "thinking_disabled"
+	RewriteModel         = "model"
+	RewriteStopSequences = "stop_sequences"
 )
 
 // reservoirCap bounds per-endpoint latency samples held in memory. 1024 is
@@ -42,7 +41,6 @@ type Collector struct {
 	rewrites       map[string]int
 	upstreamErrors map[string]*upstreamErrorAgg
 	requestsSeen   map[string]int
-	requests       map[string]int // request-feature counters (e.g. thinking_enabled_seen)
 	rng            *rand.Rand
 }
 
@@ -56,7 +54,6 @@ func New() *Collector {
 		rewrites:       map[string]int{},
 		upstreamErrors: map[string]*upstreamErrorAgg{},
 		requestsSeen:   map[string]int{},
-		requests:       map[string]int{},
 		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
@@ -118,16 +115,6 @@ func (c *Collector) RecordRequestSeen(endpoint string) {
 	c.requestsSeen[endpoint]++
 }
 
-// RecordThinkingEnabledSeen increments the counter for every inbound
-// /v1/messages request carrying thinking={type:enabled}. Stage 2.6b
-// 501s these; the counter is the empirical demand signal that decides
-// whether Stage 2.6c (full reasoning_content roundtrip) fires.
-func (c *Collector) RecordThinkingEnabledSeen() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.requests["thinking_enabled_seen"]++
-}
-
 // RecordUpstreamError records a non-2xx response from the upstream. status
 // is the upstream's HTTP code (e.g., 400, 502, 429). Aggregated by class
 // (4xx/5xx) and per-status for drill-down. Operators read both to answer
@@ -162,7 +149,6 @@ func (c *Collector) Snapshot() Snapshot {
 		Rewrites:       make(map[string]int, len(c.rewrites)),
 		UpstreamErrors: make(map[string]UpstreamErrorStats, len(c.upstreamErrors)),
 		RequestsSeen:   make(map[string]int, len(c.requestsSeen)),
-		Requests:       make(map[string]int, len(c.requests)),
 	}
 	for ep, r := range c.latency {
 		snap.Latency[ep] = LatencyStats{
@@ -198,9 +184,6 @@ func (c *Collector) Snapshot() Snapshot {
 	for k, v := range c.requestsSeen {
 		snap.RequestsSeen[k] = v
 	}
-	for k, v := range c.requests {
-		snap.Requests[k] = v
-	}
 	return snap
 }
 
@@ -213,7 +196,6 @@ type Snapshot struct {
 	Rewrites       map[string]int                `json:"rewrites"`
 	UpstreamErrors map[string]UpstreamErrorStats `json:"upstream_errors"`
 	RequestsSeen   map[string]int                `json:"requests_seen"`
-	Requests       map[string]int                `json:"requests"`
 }
 
 // UpstreamErrorStats reports counts of upstream non-2xx responses per

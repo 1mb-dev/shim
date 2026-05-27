@@ -41,7 +41,9 @@ type AnthropicMessage struct {
 }
 
 // AnthropicBlock is a tagged union of content block types: text, image,
-// tool_use, tool_result, and thinking (Stage 0 rejects thinking loudly).
+// tool_use, tool_result, and thinking. Stage 2.6c lifts the
+// assistant-side thinking 501; user-side thinking is still rejected
+// because the Anthropic spec only produces thinking on assistant turns.
 type AnthropicBlock struct {
 	Type string `json:"type"`
 
@@ -62,6 +64,13 @@ type AnthropicBlock struct {
 	// blocks. We keep RawMessage for the boundary.
 	ToolContent json.RawMessage `json:"content,omitempty"`
 	IsError     bool            `json:"is_error,omitempty"`
+
+	// type: "thinking" (Stage 2.6c). Thinking carries the model's reasoning
+	// text; Signature is constant "shim-passthrough-v1" — shim doesn't
+	// verify on roundtrip and DeepSeek discards it. See README "Errors and
+	// debugging" for the no-verification posture rationale.
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
 }
 
 // AnthropicImageSource carries either base64 data with a media_type or a
@@ -126,11 +135,16 @@ type DeepSeekThinkingConfig struct {
 
 // OpenAIMessage covers system, user, assistant, and tool roles. Content is
 // string for simple cases or an array of parts when mixed text+image.
+// ReasoningContent (Stage 2.6c) carries DeepSeek's thinking-mode reasoning
+// text on assistant messages — emitted by upstream in responses, optionally
+// echoed back in continuation requests so the upstream's "reasoning_content
+// required on tool continuations" contract holds.
 type OpenAIMessage struct {
-	Role       string           `json:"role"`
-	Content    json.RawMessage  `json:"content,omitempty"`
-	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Role             string           `json:"role"`
+	Content          json.RawMessage  `json:"content,omitempty"`
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
 }
 
 // OpenAIContentPart represents a single chunk within a multi-modal user

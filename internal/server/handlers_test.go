@@ -369,22 +369,6 @@ func TestMessages_StreamUpstreamMalformed(t *testing.T) {
 	}
 }
 
-func TestMessages_ThinkingRejected(t *testing.T) {
-	s := newStub()
-	defer s.close()
-	srv, _ := newTestServer(t, s)
-
-	body := `{"model":"x","max_tokens":1,"messages":[{"role":"assistant","content":[{"type":"thinking","text":"hmm"}]}]}`
-	resp := doPOST(t, srv, "/v1/messages", body)
-	respBody := bodyOf(t, resp)
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Errorf("status = %d, want 501", resp.StatusCode)
-	}
-	if !strings.Contains(respBody, "thinking") {
-		t.Errorf("body should explain thinking: %s", respBody)
-	}
-}
-
 func TestMessages_Malformed(t *testing.T) {
 	s := newStub()
 	defer s.close()
@@ -650,35 +634,6 @@ func TestInputTokens_ExtractsText(t *testing.T) {
 				t.Errorf("input_tokens = %d exceeds maxTokens %d — JSON syntax bytes leaking into count? body: %s", out["input_tokens"], tc.maxTokens, respBody)
 			}
 		})
-	}
-}
-
-// TestMessages_ThinkingPreventsStopSequencesCounter: stop_sequences cap +
-// counter must NOT fire when the request is rejected at the thinking-block
-// gate. Closes the ordering finding from /code-review 2026-05-26.
-func TestMessages_ThinkingPreventsStopSequencesCounter(t *testing.T) {
-	s := newStub()
-	defer s.close()
-	srv, _ := newTestServer(t, s)
-
-	// 6 stop_sequences (over cap) + a thinking block → should 501 with
-	// NO rewrites.stop_sequences increment.
-	body := `{"model":"x","max_tokens":1,"stop_sequences":["a","b","c","d","e","f"],"messages":[{"role":"assistant","content":[{"type":"thinking","text":"hmm"}]}]}`
-	resp := doPOST(t, srv, "/v1/messages", body)
-	bodyOf(t, resp)
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want 501", resp.StatusCode)
-	}
-
-	// Inspect /v1/metrics — rewrites.stop_sequences must be zero.
-	metricsResp := doGET(t, srv, "/v1/metrics")
-	metricsBody := bodyOf(t, metricsResp)
-	var snap measure.Snapshot
-	if err := json.Unmarshal([]byte(metricsBody), &snap); err != nil {
-		t.Fatal(err)
-	}
-	if got := snap.Rewrites[measure.RewriteStopSequences]; got != 0 {
-		t.Errorf("rewrites.stop_sequences = %d after thinking-rejected request, want 0", got)
 	}
 }
 
@@ -1121,42 +1076,20 @@ func TestMessages_BackTranslationFailureNoRecord(t *testing.T) {
 	}
 }
 
-// TestMessages_ThinkingEnabled_Returns501 pins Stage 2.6b's loud-fail
-// guard for client-requested extended thinking. The counter
-// `requests.thinking_enabled_seen` is the L2-demand telemetry — if this
-// fires in real traffic, Stage 2.6c is justified; if it stays at zero,
-// L2 stays deferred.
-func TestMessages_ThinkingEnabled_Returns501(t *testing.T) {
+// Stage 2.6c — thinking control plane tests. The 2.6b counters
+// (requests.thinking_enabled_seen, rewrites.thinking_disabled) were
+// removed along with the inject-disabled logic and the thinking-enabled
+// 501 guard. New invariants:
+//   - Client omits thinking → outbound has no thinking field (pass nil).
+//   - Client sends thinking.disabled → outbound has thinking=disabled.
+//   - Client sends thinking.enabled → outbound has thinking=enabled.
+// Translation of thinking content blocks ↔ reasoning_content is covered
+// in translate-package unit tests; the e2e roundtrip exercises the full
+// loop.
+
+func TestMessages_NoThinking_PassesNilThrough(t *testing.T) {
 	s := newStub()
 	defer s.close()
-	srv, _ := newTestServer(t, s)
-
-	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"}}`
-	resp := doPOST(t, srv, "/v1/messages", body)
-	respBody := bodyOf(t, resp)
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Errorf("status = %d, want 501", resp.StatusCode)
-	}
-	if !strings.Contains(respBody, "extended thinking not yet supported") {
-		t.Errorf("body should cite 2.6c plan: %s", respBody)
-	}
-
-	snap := srv.measure.Snapshot()
-	if got := snap.Requests["thinking_enabled_seen"]; got != 1 {
-		t.Errorf("requests.thinking_enabled_seen = %d, want 1", got)
-	}
-}
-
-// TestMessages_NoThinking_InjectsDisabled pins the bug fix: when the
-// client omits the thinking field, shim sends thinking={type:disabled} to
-// upstream and counts the injection in rewrites.thinking_disabled.
-// Without this rewrite, DeepSeek's silent-default-enabled behavior 400s
-// on tool-call continuations.
-func TestMessages_NoThinking_InjectsDisabled(t *testing.T) {
-	s := newStub()
-	defer s.close()
-
-	// Override stub to capture the body shim sends to upstream.
 	var capturedBody []byte
 	s.mu.Lock()
 	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
@@ -1173,25 +1106,14 @@ func TestMessages_NoThinking_InjectsDisabled(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	if !strings.Contains(string(capturedBody), `"thinking":{"type":"disabled"}`) {
-		t.Errorf("upstream body missing injected thinking=disabled: %s", capturedBody)
-	}
-
-	snap := srv.measure.Snapshot()
-	if got := snap.Rewrites["thinking_disabled"]; got != 1 {
-		t.Errorf("rewrites.thinking_disabled = %d, want 1", got)
+	if strings.Contains(string(capturedBody), `"thinking"`) {
+		t.Errorf("upstream body should NOT carry a thinking field when client omits it: %s", capturedBody)
 	}
 }
 
-// TestMessages_ThinkingDisabled_PassesThrough — client explicitly sets
-// thinking={type:disabled}; shim forwards identity and does NOT count a
-// rewrite (the client asked for it, shim didn't inject it). Keeps the
-// thinking_disabled counter semantic as "shim-injected disable", not
-// "every disabled request."
 func TestMessages_ThinkingDisabled_PassesThrough(t *testing.T) {
 	s := newStub()
 	defer s.close()
-
 	var capturedBody []byte
 	s.mu.Lock()
 	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
@@ -1209,11 +1131,40 @@ func TestMessages_ThinkingDisabled_PassesThrough(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	if !strings.Contains(string(capturedBody), `"thinking":{"type":"disabled"}`) {
-		t.Errorf("upstream body should still carry thinking=disabled (identity pass-through): %s", capturedBody)
+		t.Errorf("upstream body should carry thinking=disabled (identity pass-through): %s", capturedBody)
 	}
+}
 
-	snap := srv.measure.Snapshot()
-	if got := snap.Rewrites["thinking_disabled"]; got != 0 {
-		t.Errorf("rewrites.thinking_disabled = %d, want 0 (no injection — client requested disabled)", got)
+// TestMessages_ThinkingEnabled_PassesThrough — 2.6c lifted 2.6b's 501.
+// Client opt-in to thinking is now forwarded; reasoning_content roundtrip
+// is handled in the translate layer + e2e.
+func TestMessages_ThinkingEnabled_PassesThrough(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	var capturedBody []byte
+	s.mu.Lock()
+	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok","reasoning_content":"thought"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}
+	s.mu.Unlock()
+	srv, _ := newTestServer(t, s)
+
+	body := `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled"}}`
+	resp := doPOST(t, srv, "/v1/messages", body)
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", resp.StatusCode, respBody)
+	}
+	if !strings.Contains(string(capturedBody), `"thinking":{"type":"enabled"}`) {
+		t.Errorf("upstream body should carry thinking=enabled (identity pass-through): %s", capturedBody)
+	}
+	// Response should contain the translated thinking block.
+	if !strings.Contains(respBody, `"type":"thinking"`) || !strings.Contains(respBody, `"thinking":"thought"`) {
+		t.Errorf("client response should carry translated thinking block: %s", respBody)
+	}
+	if !strings.Contains(respBody, `"signature":"shim-passthrough-v1"`) {
+		t.Errorf("client response should carry constant signature: %s", respBody)
 	}
 }

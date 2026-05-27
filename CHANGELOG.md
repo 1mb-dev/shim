@@ -3,6 +3,43 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased] — Stage 2.6c (2026-05-27)
+
+Full reasoning_content ↔ thinking-block roundtrip. Stage 2.6b's
+empirical reproduction proved DeepSeek v4-pro ignores
+`thinking: {type: "disabled"}` — the L1 control plane could never fix
+the 400 loop because the upstream doesn't honor the disable. Maya's
+huddle framing wins retroactively: this work was correctness, not a
+feature; L2 was the only path that closes the contract.
+
+### Added
+- `OpenAIMessage.ReasoningContent` field — captures DeepSeek's thinking-mode reasoning text on inbound responses; carries shim's outbound reconstruction on continuations (round-trips the contract).
+- `AnthropicBlock.Thinking` + `AnthropicBlock.Signature` fields — only meaningful for `type: "thinking"` blocks per Anthropic's spec.
+- `translate.thinkingSignature = "shim-passthrough-v1"` constant — shim doesn't verify on roundtrip (clients pass opaquely; DeepSeek discards). See README "Thinking-block signatures" for the no-verification posture rationale.
+- Bidirectional translation: response-side `reasoning_content` → Anthropic thinking block (with constant sig); request-side thinking block → `reasoning_content` (sig discarded).
+- Block ordering on response side: thinking → text → tool_use, per Anthropic spec.
+- Multiple thinking blocks in one assistant turn concatenate (newline-separated) into one reasoning_content on outbound.
+- `extractText` now counts thinking-block content for `shim_total` (keeps measurement honest when clients echo thinking back).
+- 5 new translate-pkg unit tests + 1 handler test + 2 e2e cases: `TestE2E_ReasoningRoundtrip_3Turn` (positive case) + `TestE2E_ThinkingMissing_StubEnforces400` (negative case fences the stub contract).
+- README "Thinking-block signatures" subsection — documents the no-verification posture explicitly so future readers don't add HMAC back as "the missing fix."
+
+### Changed
+- `handleMessages` no longer 501s on assistant-side thinking content blocks (`containsThinkingBlock` removed) — they translate to reasoning_content now.
+- `handleMessages` no longer 501s on request-level `thinking: {type: "enabled"}` (2.6b guard removed) — forwarded identity, reasoning roundtrips.
+- `AnthropicToOpenAI` no longer injects `{type: "disabled"}` when client omits thinking — DeepSeek ignored it anyway. Pass nil through.
+- `FakeUpstream.violatesToolContinuationContract` proxy rule updated to match DeepSeek's real contract: thinking active + tool_calls in history + no reasoning_content on prior assistant turn = 400.
+
+### Removed (breaking changes to `/v1/metrics` JSON shape)
+- `requests` top-level field + `requests.thinking_enabled_seen` counter (added in 2.6b). The "501 fired" semantic dies when L2 lifts the 501; no clean repurpose.
+- `rewrites.thinking_disabled` counter (added in 2.6b). The inject-disabled logic is gone; the counter would always be zero.
+- `measure.RecordThinkingEnabledSeen` method, `measure.RewriteThinkingDisabled` const, `Collector.requests` field, `Snapshot.Requests` field.
+- 2.6b-era tests: `TestMessages_ThinkingEnabled_Returns501`, `TestMessages_NoThinking_InjectsDisabled`, `TestMessages_ThinkingRejected`, `TestMessages_ThinkingPreventsStopSequencesCounter`, `TestAnthropicToOpenAI_ThinkingRejected`. Replaced with positive-case tests for the new pass-through + roundtrip behaviors.
+
+### Known limitations (deferred — see plan)
+- `thinking: {display: "omitted"}` — no stateless path to reproduce signature for absent content.
+- `redacted_thinking` blocks — same reason.
+- Streaming `delta.reasoning_content` per-token forwarding — alongside true SSE passthrough.
+
 ## [Unreleased] — Stage 2.6b-followup (2026-05-27)
 
 Live experiment hit `Client.Timeout=60s` on a multi-persona review

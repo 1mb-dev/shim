@@ -280,18 +280,173 @@ func TestAnthropicToOpenAI_TemperatureTopPPassthrough(t *testing.T) {
 	}
 }
 
-func TestAnthropicToOpenAI_ThinkingRejected(t *testing.T) {
+// TestAnthropicToOpenAI_AssistantThinkingRoundtrips — Stage 2.6c lifted
+// the assistant-side thinking 501. Thinking blocks now populate
+// reasoning_content on the outbound OpenAI message; signature is
+// discarded (DeepSeek doesn't accept it and shim doesn't verify on
+// roundtrip — constant-string posture documented in README).
+func TestAnthropicToOpenAI_AssistantThinkingRoundtrips(t *testing.T) {
 	req := &AnthropicRequest{
 		Model: "x", MaxTokens: 1,
 		Messages: []AnthropicMessage{
 			{Role: "assistant", Content: mustJSON([]AnthropicBlock{
-				{Type: "thinking", Text: "..."},
+				{Type: "thinking", Thinking: "deliberating...", Signature: "anything"},
+				{Type: "text", Text: "final answer"},
+			})},
+		},
+	}
+	out, err := AnthropicToOpenAI(req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(out.Messages) != 1 {
+		t.Fatalf("expected 1 outbound message, got %d", len(out.Messages))
+	}
+	m := out.Messages[0]
+	if m.ReasoningContent != "deliberating..." {
+		t.Errorf("reasoning_content = %q, want %q", m.ReasoningContent, "deliberating...")
+	}
+	if !strings.Contains(string(m.Content), "final answer") {
+		t.Errorf("content missing text part: %s", m.Content)
+	}
+}
+
+// TestAnthropicToOpenAI_UserThinkingStillRejected — only assistant turns
+// produce thinking per Anthropic's spec. User-side thinking blocks still
+// loud-fail; lifting the assistant-side gate does not cascade.
+func TestAnthropicToOpenAI_UserThinkingStillRejected(t *testing.T) {
+	req := &AnthropicRequest{
+		Model: "x", MaxTokens: 1,
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: mustJSON([]AnthropicBlock{
+				{Type: "thinking", Thinking: "..."},
 			})},
 		},
 	}
 	_, err := AnthropicToOpenAI(req)
 	if err == nil || !strings.Contains(err.Error(), "thinking") {
-		t.Fatalf("expected thinking-not-supported error, got %v", err)
+		t.Fatalf("expected user-side thinking error, got %v", err)
+	}
+}
+
+// TestOpenAIToAnthropic_ReasoningContentBecomesThinkingBlock — response
+// side. DeepSeek's reasoning_content becomes an Anthropic thinking block
+// with the constant signature; block ordering is thinking-first (Anthropic
+// spec: thinking precedes tool_use in assistant turns).
+func TestOpenAIToAnthropic_ReasoningContentBecomesThinkingBlock(t *testing.T) {
+	resp := &OpenAIResponse{
+		ID:    "chatcmpl-x",
+		Model: "deepseek-v4-pro",
+		Choices: []OpenAIChoice{{
+			Index: 0,
+			Message: OpenAIMessage{
+				Role:             "assistant",
+				Content:          mustJSON("the answer"),
+				ReasoningContent: "let me think...",
+			},
+			FinishReason: "stop",
+		}},
+	}
+	out, err := OpenAIToAnthropic(resp, "claude-opus-4-7")
+	if err != nil {
+		t.Fatalf("OpenAIToAnthropic: %v", err)
+	}
+	if len(out.Content) != 2 {
+		t.Fatalf("expected 2 blocks (thinking + text), got %d", len(out.Content))
+	}
+	if out.Content[0].Type != "thinking" {
+		t.Errorf("block[0].type = %q, want thinking (ordering: thinking precedes text)", out.Content[0].Type)
+	}
+	if out.Content[0].Thinking != "let me think..." {
+		t.Errorf("block[0].thinking = %q", out.Content[0].Thinking)
+	}
+	if out.Content[0].Signature != "shim-passthrough-v1" {
+		t.Errorf("block[0].signature = %q, want constant sig", out.Content[0].Signature)
+	}
+	if out.Content[1].Type != "text" || out.Content[1].Text != "the answer" {
+		t.Errorf("block[1] = %+v, want text/the answer", out.Content[1])
+	}
+}
+
+// TestOpenAIToAnthropic_EmptyReasoningContentNoBlock — defensive: a
+// response without reasoning content should NOT emit an empty thinking
+// block. Zero-content thinking blocks are noise and violate the
+// signature-implies-content invariant.
+func TestOpenAIToAnthropic_EmptyReasoningContentNoBlock(t *testing.T) {
+	resp := &OpenAIResponse{
+		ID: "chatcmpl-x", Model: "x",
+		Choices: []OpenAIChoice{{
+			Index:        0,
+			Message:      OpenAIMessage{Role: "assistant", Content: mustJSON("hi")},
+			FinishReason: "stop",
+		}},
+	}
+	out, err := OpenAIToAnthropic(resp, "claude-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, b := range out.Content {
+		if b.Type == "thinking" {
+			t.Errorf("block[%d] is thinking but reasoning_content was empty", i)
+		}
+	}
+}
+
+// TestOpenAIToAnthropic_ReasoningWithToolCallOrdering — Anthropic's spec
+// says thinking precedes tool_use in assistant turns. With both present,
+// shim emits thinking first.
+func TestOpenAIToAnthropic_ReasoningWithToolCallOrdering(t *testing.T) {
+	resp := &OpenAIResponse{
+		ID: "chatcmpl-x", Model: "x",
+		Choices: []OpenAIChoice{{
+			Index: 0,
+			Message: OpenAIMessage{
+				Role:             "assistant",
+				ReasoningContent: "deciding to use tool",
+				ToolCalls: []OpenAIToolCall{{
+					ID: "call_1", Type: "function",
+					Function: OpenAIToolCallBody{Name: "get_weather", Arguments: `{"city":"SF"}`},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}},
+	}
+	out, err := OpenAIToAnthropic(resp, "claude-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Content) != 2 {
+		t.Fatalf("expected 2 blocks (thinking + tool_use), got %d: %+v", len(out.Content), out.Content)
+	}
+	if out.Content[0].Type != "thinking" {
+		t.Errorf("block[0] type = %q, want thinking (ordering invariant)", out.Content[0].Type)
+	}
+	if out.Content[1].Type != "tool_use" {
+		t.Errorf("block[1] type = %q, want tool_use", out.Content[1].Type)
+	}
+}
+
+// TestAnthropicToOpenAI_MultipleThinkingBlocksConcatenate — rare but the
+// spec allows it. Shim concatenates with newline so the upstream sees one
+// reasoning_content string.
+func TestAnthropicToOpenAI_MultipleThinkingBlocksConcatenate(t *testing.T) {
+	req := &AnthropicRequest{
+		Model: "x", MaxTokens: 1,
+		Messages: []AnthropicMessage{
+			{Role: "assistant", Content: mustJSON([]AnthropicBlock{
+				{Type: "thinking", Thinking: "first"},
+				{Type: "thinking", Thinking: "second"},
+				{Type: "text", Text: "done"},
+			})},
+		},
+	}
+	out, err := AnthropicToOpenAI(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "first\nsecond"
+	if out.Messages[0].ReasoningContent != want {
+		t.Errorf("reasoning_content = %q, want %q", out.Messages[0].ReasoningContent, want)
 	}
 }
 

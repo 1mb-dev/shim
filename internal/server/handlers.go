@@ -104,10 +104,11 @@ func inputTokens(req *translate.AnthropicRequest) int {
 }
 
 // extractText pulls prompt text out of a json.RawMessage that may be a
-// JSON string ("text") or an array of content blocks
-// ([{"type":"text","text":"..."}, ...]). Returns ("", false) for null or
-// unparseable input. Non-text blocks (image, tool_use, tool_result) are
-// skipped — their JSON bodies would otherwise count brackets and keys.
+// JSON string ("text") or an array of content blocks. Returns ("", false)
+// for null or unparseable input. Counts text and thinking blocks (Stage
+// 2.6c — thinking carries prompt-derived content when echoed back). Other
+// block types (image, tool_use, tool_result) are skipped — their JSON
+// bodies would otherwise count brackets and keys.
 func extractText(raw json.RawMessage) (string, bool) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return "", false
@@ -126,11 +127,20 @@ func extractText(raw json.RawMessage) (string, bool) {
 		}
 		var sb strings.Builder
 		for _, b := range blocks {
-			if b.Type == "text" {
+			switch b.Type {
+			case "text":
 				if sb.Len() > 0 {
 					sb.WriteByte(' ')
 				}
 				sb.WriteString(b.Text)
+			case "thinking":
+				// Stage 2.6c — thinking text is real prompt-derived
+				// content; counting keeps shim_total honest vs.
+				// upstream_prompt_total when clients echo thinking back.
+				if sb.Len() > 0 {
+					sb.WriteByte(' ')
+				}
+				sb.WriteString(b.Thinking)
 			}
 		}
 		return sb.String(), true
@@ -140,12 +150,14 @@ func extractText(raw json.RawMessage) (string, bool) {
 
 // handleMessages — POST /v1/messages.
 //
-// Flow: read+cap body → parse → reject streaming/thinking → translate to
-// OpenAI → adapter.BuildRequest → client.Do → adapter.NormalizeResponse →
-// translate back to Anthropic → write JSON.
+// Flow: read+cap body → parse → cap stop_sequences → branch on stream →
+// translate to OpenAI → adapter.BuildRequest → client.Do →
+// adapter.NormalizeResponse → translate back to Anthropic → write JSON.
 //
 // Every loud-fail path emits an Anthropic-shaped error and logs the event
-// with redacted attrs.
+// with redacted attrs. Stage 2.6c removed the assistant-side thinking-
+// block 501 (now translates to reasoning_content); user-side thinking
+// still rejected at translate.go per the Anthropic spec.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	s.measure.RecordRequestSeen("/v1/messages")
@@ -163,27 +175,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if containsThinkingBlock(req.Messages) {
-		writeError(w, s.log, http.StatusNotImplemented, errInvalidRequest,
-			"extended thinking not yet supported")
-		return
-	}
-
-	// Stage 2.6b: 501 on request-level thinking=enabled. Different layer
-	// from containsThinkingBlock above (which gates message-level thinking
-	// content blocks). The counter is the L2-demand telemetry that decides
-	// whether Stage 2.6c fires — see todos/shim-stage2.6b-plan.md.
-	if req.Thinking != nil && req.Thinking.Type == "enabled" {
-		s.measure.RecordThinkingEnabledSeen()
-		writeError(w, s.log, http.StatusNotImplemented, errInvalidRequest,
-			"extended thinking not yet supported by shim's translator (planned for Stage 2.6c)")
-		return
-	}
-
 	// OpenAI-compatible upstreams reject stop arrays larger than 4 with a
-	// 400 that looks like a shim bug; cap loudly per thesis-2. Run AFTER
-	// the thinking-block gate so a request rejected at 501 doesn't leave a
-	// rewrite counter increment that never reached the wire.
+	// 400 that looks like a shim bug; cap loudly per thesis-2.
 	if n := len(req.StopSequences); n > maxStopSequences {
 		s.log.Warn("stop_sequences truncated",
 			slog.Int("from", n),
@@ -206,9 +199,6 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	openaiReq.Model = s.adapter.MapModel(req.Model)
 	s.logModelRewrite(req.Model, openaiReq.Model)
-	if req.Thinking == nil {
-		s.measure.RecordRewriteEvent(measure.RewriteThinkingDisabled)
-	}
 
 	openaiBody, err := json.Marshal(openaiReq)
 	if err != nil {
@@ -371,26 +361,4 @@ func (s *Server) writeUpstreamError(w http.ResponseWriter, endpoint, resolvedMod
 		writeError(w, s.log, http.StatusBadGateway, errAPI,
 			"upstream error: "+err.Error())
 	}
-}
-
-func containsThinkingBlock(msgs []translate.AnthropicMessage) bool {
-	for _, m := range msgs {
-		if len(m.Content) == 0 || m.Content[0] != '[' {
-			continue
-		}
-		// Cheap scan rather than parsing the full structure twice — looks
-		// for a top-level "thinking" type token. Conservative: false
-		// negatives are acceptable (the translator will reject downstream),
-		// false positives would block legitimate traffic and are rejected.
-		var blocks []translate.AnthropicBlock
-		if err := json.Unmarshal(m.Content, &blocks); err != nil {
-			continue
-		}
-		for _, b := range blocks {
-			if b.Type == "thinking" {
-				return true
-			}
-		}
-	}
-	return false
 }
