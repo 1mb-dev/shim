@@ -40,12 +40,14 @@ RACE ?= -race
 
 test:
 	go test $(RACE) ./...
+	@echo "# tip: e2e suite gated by build tag — run 'make e2e'"
 
 # Process-boundary E2E: builds ./shim, spawns it against a fake upstream,
 # exercises real HTTP. Gated behind the `e2e` build tag so `make test` stays
 # fast. CI invokes both targets.
 e2e:
 	go test -tags e2e -count=1 ./internal/e2e/...
+	@echo "# tip: live-upstream smoke — set SHIM_SMOKE=1 + DEEPSEEK_SMOKE_API_KEY and run 'make smoke'"
 
 # Live smoke: spawns ./shim against api.deepseek.com for one real request.
 # Double-gated: build tag `smoke` AND env var SHIM_SMOKE=1. Requires
@@ -53,6 +55,7 @@ e2e:
 # isolation). Never run in CI by default; pre-release/pre-push only.
 smoke:
 	go test -tags smoke -count=1 -v ./internal/smoke/...
+	@echo "# smoke complete (skipped if SHIM_SMOKE != 1; see internal/smoke/README.md)"
 
 coverage:
 	go test $(RACE) -coverprofile=cover.out ./...
