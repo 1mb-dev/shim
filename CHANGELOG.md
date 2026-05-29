@@ -3,7 +3,7 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased] — Stage 2.6c (2026-05-27)
+## [0.0.2] — Stage 2.6c (2026-05-27)
 
 Full reasoning_content ↔ thinking-block roundtrip. Stage 2.6b's
 empirical reproduction proved DeepSeek v4-pro ignores
@@ -40,7 +40,7 @@ feature; L2 was the only path that closes the contract.
 - `redacted_thinking` blocks — same reason.
 - Streaming `delta.reasoning_content` per-token forwarding — alongside true SSE passthrough.
 
-## [Unreleased] — Stage 2.6b-followup (2026-05-27)
+## [0.0.2] — Stage 2.6b-followup (2026-05-27)
 
 Live experiment hit `Client.Timeout=60s` on a multi-persona review
 through shim; legitimate long generations need wider headroom.
@@ -52,7 +52,7 @@ through shim; legitimate long generations need wider headroom.
 ### Known gap surfaced (deferred to backlog)
 - Body-read timeouts mid-stream get bucketed as `upstream_errors.by_status.200` because `upstream.StatusCode` reflects the headers that arrived before the timeout. See `todos/backlog.md`.
 
-## [Unreleased] — Stage 2.6b (2026-05-27)
+## [0.0.2] — Stage 2.6b (2026-05-27)
 
 Thinking control plane + L2-demand telemetry. Stage 2.6's body capture
 identified the reasoning_content roundtrip bug within one session.
@@ -90,7 +90,7 @@ counter shows real demand.
 - Streaming `delta.reasoning_content` per-token forwarding — alongside true SSE passthrough work.
 - Env-var knob `SHIM_THINKING` — adds config sprawl with no user-behind-the-knob.
 
-## [Unreleased] — Stage 2.6 (2026-05-27)
+## [0.0.2] — Stage 2.6 (2026-05-27)
 
 Upstream boundary honesty. A real DeepSeek session produced ~20
 consecutive `upstream status 400` responses; the log line carried no
