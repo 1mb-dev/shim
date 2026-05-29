@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+
+	"github.com/1mb-dev/shim/internal/translate"
 )
 
 // Adapter normalises one OpenAI-compatible upstream. The translator emits a
@@ -49,10 +51,20 @@ type Adapter interface {
 	// auth headers set. Adapter must call req.WithContext(ctx).
 	BuildRequest(ctx context.Context, body []byte) (*http.Request, error)
 
-	// NormalizeResponse reads the upstream response and returns a canonical
-	// OpenAI-shape JSON body. Used by the translator. Adapter is responsible
-	// for unwrapping any provider-specific envelope.
+	// NormalizeResponse reads a buffered (non-streaming) upstream response and
+	// returns a canonical body for the Translator's FromUpstream, erroring on
+	// non-2xx (the server routes that to writeUpstreamError). Adapter is
+	// responsible for unwrapping any provider-specific envelope. The streaming
+	// path does NOT call this — it gates on HTTP status directly, since a
+	// native-Anthropic passthrough cannot normalize a live SSE stream to bytes.
 	NormalizeResponse(resp *http.Response) ([]byte, error)
+
+	// Translator returns the wire-format translator for this adapter's
+	// transport dialect. OpenAI-dialect adapters return
+	// translate.AnthropicOpenAI(); a native-Anthropic passthrough returns an
+	// identity translator. The server handler calls it instead of hard-wiring
+	// a dialect, keeping dialect knowledge inside the adapter.
+	Translator() translate.Translator
 }
 
 var (

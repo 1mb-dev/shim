@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,17 @@ import (
 	"github.com/1mb-dev/shim/internal/tokens"
 	"github.com/1mb-dev/shim/internal/translate"
 )
+
+// upstreamErrStatus maps a Translator error to an HTTP status: a
+// structurally-valid upstream response shim couldn't convert back to
+// Anthropic shape is a 500 (ErrBackTranslation — shim's mapping fell short);
+// a malformed or otherwise unusable upstream body is a 502 (gateway problem).
+func upstreamErrStatus(err error) int {
+	if errors.Is(err, translate.ErrBackTranslation) {
+		return http.StatusInternalServerError
+	}
+	return http.StatusBadGateway
+}
 
 // maxStopSequences is the OpenAI-imposed cap on stop[] entries. Requests
 // over this are truncated at the server boundary with a warn log rather
@@ -191,19 +203,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	openaiReq, err := translate.AnthropicToOpenAI(&req)
+	t := s.adapter.Translator()
+	mappedModel := s.adapter.MapModel(req.Model)
+	s.logModelRewrite(req.Model, mappedModel)
+
+	openaiBody, err := t.ToUpstream(&req, mappedModel)
 	if err != nil {
 		writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
 			"translation: "+err.Error())
-		return
-	}
-	openaiReq.Model = s.adapter.MapModel(req.Model)
-	s.logModelRewrite(req.Model, openaiReq.Model)
-
-	openaiBody, err := json.Marshal(openaiReq)
-	if err != nil {
-		writeError(w, s.log, http.StatusInternalServerError, errAPI,
-			"failed to encode upstream request")
 		return
 	}
 
@@ -223,21 +230,13 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	normalised, err := s.adapter.NormalizeResponse(upstream)
 	if err != nil {
-		s.writeUpstreamError(w, "/v1/messages", openaiReq.Model, upstream.StatusCode, normalised, err)
+		s.writeUpstreamError(w, "/v1/messages", mappedModel, upstream.StatusCode, normalised, err)
 		return
 	}
 
-	var openaiResp translate.OpenAIResponse
-	if err := json.Unmarshal(normalised, &openaiResp); err != nil {
-		writeError(w, s.log, http.StatusBadGateway, errAPI,
-			"upstream returned malformed JSON: "+err.Error())
-		return
-	}
-
-	anthropicResp, err := translate.OpenAIToAnthropic(&openaiResp, req.Model)
+	anthropicResp, usage, err := t.FromUpstream(normalised, req.Model)
 	if err != nil {
-		writeError(w, s.log, http.StatusInternalServerError, errAPI,
-			"translation back: "+err.Error())
+		writeError(w, s.log, upstreamErrStatus(err), errAPI, err.Error())
 		return
 	}
 
@@ -246,8 +245,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Collector additionally no-ops on zero Usage (some upstreams omit it).
 	s.measure.RecordTokenDelta("/v1/messages",
 		inputTokens(&req),
-		openaiResp.Usage.PromptTokens,
-		openaiResp.Usage.CompletionTokens,
+		usage.InputTokens,
+		usage.OutputTokens,
 	)
 
 	w.Header().Set("Content-Type", "application/json")

@@ -19,6 +19,7 @@ import (
 	"github.com/1mb-dev/shim/internal/adapter"
 	"github.com/1mb-dev/shim/internal/config"
 	"github.com/1mb-dev/shim/internal/measure"
+	"github.com/1mb-dev/shim/internal/translate"
 )
 
 // stub is an Adapter test double the server can drive without DeepSeek.
@@ -84,6 +85,8 @@ func (s *stub) NormalizeResponse(r *http.Response) ([]byte, error) {
 	}
 	return body, nil
 }
+
+func (s *stub) Translator() translate.Translator { return translate.AnthropicOpenAI() }
 
 // errKeyMissing matches the substring preflightAdapter scans for.
 var errKeyMissing = errStr("UPSTREAM_API_KEY not set")

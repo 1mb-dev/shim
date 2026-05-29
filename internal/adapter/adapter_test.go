@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+
+	"github.com/1mb-dev/shim/internal/translate"
 )
 
 // fake is a minimal Adapter for registry tests.
@@ -15,6 +17,7 @@ func (f *fake) MapModel(string) string                                      { re
 func (f *fake) Validate() error                                             { return nil }
 func (f *fake) BuildRequest(context.Context, []byte) (*http.Request, error) { return nil, nil }
 func (f *fake) NormalizeResponse(*http.Response) ([]byte, error)            { return nil, nil }
+func (f *fake) Translator() translate.Translator                            { return translate.AnthropicOpenAI() }
 
 // resetRegistry isolates tests from each other. Test-only helper.
 func resetRegistry(t *testing.T) {

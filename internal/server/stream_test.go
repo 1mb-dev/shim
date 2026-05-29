@@ -5,12 +5,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/1mb-dev/shim/internal/translate"
 )
 
 // noFlushWriter is an http.ResponseWriter that does NOT implement http.Flusher.
-// Used to exercise writeSSE's early bail when the underlying writer can't
+// Used to exercise streamSSE's early bail when the underlying writer can't
 // flush — a misconfigured reverse proxy in front of shim would surface here.
 type noFlushWriter struct {
 	h    http.Header
@@ -27,11 +25,21 @@ func (n *noFlushWriter) Header() http.Header {
 func (n *noFlushWriter) Write(b []byte) (int, error) { return n.body.Write(b) }
 func (n *noFlushWriter) WriteHeader(code int)        { n.code = code }
 
-func TestWriteSSE_NoFlusher(t *testing.T) {
+func TestStreamSSE_NoFlusher(t *testing.T) {
 	w := &noFlushWriter{}
-	events := []translate.SSEEvent{{Name: "message_start", Data: map[string]string{"type": "message_start"}}}
+	// streamSSE must bail before writing any byte, so the chunk content is
+	// irrelevant — any valid SSE frame does.
+	chunk := []byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n")
+	sent := false
+	next := func() ([]byte, bool, error) {
+		if sent {
+			return nil, false, nil
+		}
+		sent = true
+		return chunk, true, nil
+	}
 
-	err := writeSSE(w, events)
+	err := streamSSE(w, next)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

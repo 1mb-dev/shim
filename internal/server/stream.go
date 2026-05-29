@@ -1,19 +1,20 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/1mb-dev/shim/internal/translate"
 )
 
-// writeSSE emits the ordered Anthropic SSE events to w using the documented
-// wire format: `event: <name>\ndata: <json>\n\n`. Flushes after each event so
-// clients see the sequence in order. Returns the first write error (if any)
-// so the caller can log; the connection cannot be recovered mid-stream.
-func writeSSE(w http.ResponseWriter, events []translate.SSEEvent) error {
+// streamSSE writes wire-ready Anthropic SSE chunks from next to w, flushing
+// after each so clients see events in order. Sets event-stream headers and a
+// 200 before the first chunk. Returns the first iterator/write error; the
+// connection cannot be recovered mid-stream. The handler owns the writer; the
+// translator owns chunk production, so dialect stays out of the server.
+func streamSSE(w http.ResponseWriter, next func() ([]byte, bool, error)) error {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return fmt.Errorf("ResponseWriter does not support Flush")
@@ -23,41 +24,40 @@ func writeSSE(w http.ResponseWriter, events []translate.SSEEvent) error {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	for _, ev := range events {
-		data, err := json.Marshal(ev.Data)
+	for {
+		chunk, ok, err := next()
 		if err != nil {
-			return fmt.Errorf("marshal %s: %w", ev.Name, err)
+			return err
 		}
-		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Name, data); err != nil {
+		if !ok {
+			return nil
+		}
+		if _, err := w.Write(chunk); err != nil {
 			return err
 		}
 		flusher.Flush()
 	}
-	return nil
 }
 
-// handleMessagesStream handles a stream:true request. Buffer-then-restream:
-// drive the upstream as a non-streaming call (Stage 0 MVP), then emit the
-// canonical Anthropic SSE event sequence in one burst.
+// handleMessagesStream handles a stream:true request via the adapter's
+// Translator. For OpenAI-dialect upstreams this is buffer-then-restream (the
+// translator drives the upstream non-streaming and synthesizes the canonical
+// SSE sequence); for anthropic-passthrough it is true byte-passthrough. The
+// handler is dialect-free: it gates on HTTP status, then writes the chunks the
+// translator yields.
 //
 // Errors discovered BEFORE the SSE stream starts go out as Anthropic-shaped
 // JSON via writeError; errors mid-stream are logged and the connection
 // dropped (we cannot retroactively change response status).
 func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, req *translate.AnthropicRequest) {
-	openaiReq, err := translate.AnthropicToOpenAI(req)
+	t := s.adapter.Translator()
+	mappedModel := s.adapter.MapModel(req.Model)
+	s.logModelRewrite(req.Model, mappedModel)
+
+	openaiBody, err := t.ToUpstream(req, mappedModel)
 	if err != nil {
 		writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
 			"translation: "+err.Error())
-		return
-	}
-	openaiReq.Model = s.adapter.MapModel(req.Model)
-	s.logModelRewrite(req.Model, openaiReq.Model)
-	openaiReq.Stream = false // MVP: buffer-then-restream
-
-	openaiBody, err := json.Marshal(openaiReq)
-	if err != nil {
-		writeError(w, s.log, http.StatusInternalServerError, errAPI,
-			"failed to encode upstream request")
 		return
 	}
 
@@ -74,40 +74,38 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 			"upstream unreachable: "+err.Error())
 		return
 	}
+	defer upstream.Body.Close()
 
-	normalised, err := s.adapter.NormalizeResponse(upstream)
+	// Transport-level status gate. The stream path skips NormalizeResponse
+	// (Fork 2-a: a native-Anthropic passthrough cannot normalize a live SSE
+	// stream into bytes), so upstream non-2xx is handled here — behaviour-
+	// equivalent to NormalizeResponse's error path on the non-stream path.
+	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
+		body, _ := io.ReadAll(upstream.Body)
+		s.writeUpstreamError(w, "/v1/messages", mappedModel, upstream.StatusCode, body,
+			fmt.Errorf("upstream status %d", upstream.StatusCode))
+		return
+	}
+
+	next, usage, err := t.StreamChunks(upstream, req.Model)
 	if err != nil {
-		s.writeUpstreamError(w, "/v1/messages", openaiReq.Model, upstream.StatusCode, normalised, err)
+		writeError(w, s.log, upstreamErrStatus(err), errAPI, err.Error())
 		return
 	}
 
-	var openaiResp translate.OpenAIResponse
-	if err := json.Unmarshal(normalised, &openaiResp); err != nil {
-		writeError(w, s.log, http.StatusBadGateway, errAPI,
-			"upstream returned malformed JSON: "+err.Error())
-		return
-	}
+	// Record AFTER the iterator is built so a failed translate doesn't credit
+	// shim_total. Deferred so it fires once the stream drains: for true
+	// passthrough, usage is only known after the final message_delta is read.
+	// Collector no-ops on zero Usage; the nil guard defends the interface
+	// contract (usage non-nil on success) against a future translator.
+	defer func() {
+		if usage != nil {
+			s.measure.RecordTokenDelta("/v1/messages", inputTokens(req), usage.InputTokens, usage.OutputTokens)
+		}
+	}()
 
-	events, err := translate.ToAnthropicSSE(&openaiResp, req.Model)
-	if err != nil {
-		writeError(w, s.log, http.StatusInternalServerError, errAPI,
-			"build SSE: "+err.Error())
-		return
-	}
-
-	// Record AFTER SSE build succeeds so a failed translate doesn't credit
-	// shim_total for a request that never produced a streamable event.
-	// Collector additionally no-ops on zero Usage (some upstreams omit it).
-	s.measure.RecordTokenDelta("/v1/messages",
-		inputTokens(req),
-		openaiResp.Usage.PromptTokens,
-		openaiResp.Usage.CompletionTokens,
-	)
-
-	if err := writeSSE(w, events); err != nil {
-		// Connection already in SSE mode; can only log.
-		s.log.Error("sse write failed",
-			slog.String("error", err.Error()),
-		)
+	if err := streamSSE(w, next); err != nil {
+		// Connection already in SSE mode (or flush unsupported); can only log.
+		s.log.Error("sse write failed", slog.String("error", err.Error()))
 	}
 }

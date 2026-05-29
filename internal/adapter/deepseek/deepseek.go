@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/1mb-dev/shim/internal/adapter"
+	"github.com/1mb-dev/shim/internal/translate"
 )
 
 const (
@@ -187,3 +188,8 @@ func (a *impl) NormalizeResponse(resp *http.Response) ([]byte, error) {
 	}
 	return body, nil
 }
+
+// Translator returns the OpenAI-ChatCompletions dialect translator. DeepSeek
+// speaks OpenAI's format, so the canonical anthropic↔openai translator
+// applies unchanged.
+func (a *impl) Translator() translate.Translator { return translate.AnthropicOpenAI() }
