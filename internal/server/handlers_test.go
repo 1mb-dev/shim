@@ -89,13 +89,12 @@ func (s *stub) NormalizeResponse(r *http.Response) ([]byte, error) {
 func (s *stub) Translator() translate.Translator { return translate.AnthropicOpenAI() }
 
 // TestUpstreamErrStatus pins the translator-error → HTTP status mapping:
-// streaming-unsupported → 501, back-translation → 500, everything else → 502.
+// back-translation → 500, everything else → 502.
 func TestUpstreamErrStatus(t *testing.T) {
 	cases := []struct {
 		err  error
 		want int
 	}{
-		{translate.ErrStreamingUnsupported, http.StatusNotImplemented},
 		{translate.ErrBackTranslation, http.StatusInternalServerError},
 		{translate.ErrUpstreamMalformed, http.StatusBadGateway},
 		{io.EOF, http.StatusBadGateway},
@@ -794,8 +793,8 @@ func TestStream_WriteFailureLogged(t *testing.T) {
 	// must not panic
 	srv.handleMessages(fw, req)
 
-	if !strings.Contains(logBuf.String(), `"sse write failed"`) {
-		t.Fatalf("expected sse write failed log, got: %s", logBuf.String())
+	if !strings.Contains(logBuf.String(), `"sse stream failed"`) {
+		t.Fatalf("expected sse stream failed log, got: %s", logBuf.String())
 	}
 	if fw.flushed < 3 {
 		t.Errorf("expected at least 3 successful flushes before failure, got %d", fw.flushed)

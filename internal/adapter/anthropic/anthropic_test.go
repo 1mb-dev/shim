@@ -211,3 +211,59 @@ func TestPassthroughRoundtrip(t *testing.T) {
 		t.Error("unmodeled field dropped — byte-passthrough fidelity broken")
 	}
 }
+
+// TestPassthroughStreamRoundtrip: a stream:true request is forwarded with the
+// flag intact, and the upstream SSE stream is returned to the client
+// byte-identical with usage sniffed from message_start/message_delta.
+func TestPassthroughStreamRoundtrip(t *testing.T) {
+	const sseResp = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(sseResp))
+	}))
+	defer srv.Close()
+
+	a := testAdapter(t, srv.URL, "k")
+	tr := a.Translator()
+
+	reqBody := []byte(`{"model":"claude-opus-4-7","stream":true,"max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)
+	upstreamBody, _, err := tr.ToUpstream(unmarshalReq(t, reqBody), reqBody, "claude-opus-4-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(upstreamBody), `"stream":true`) {
+		t.Errorf("stream flag not forwarded verbatim: %s", upstreamBody)
+	}
+	httpReq, err := a.BuildRequest(context.Background(), upstreamBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, usage, err := tr.StreamChunks(resp, "claude-opus-4-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got strings.Builder
+	for {
+		c, ok, err := next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			break
+		}
+		got.WriteString(string(c))
+	}
+	if got.String() != sseResp {
+		t.Errorf("SSE not byte-identical:\n got: %q\nwant: %q", got.String(), sseResp)
+	}
+	if usage.InputTokens != 9 || usage.OutputTokens != 5 {
+		t.Errorf("usage = %+v, want {input:9, output:5}", *usage)
+	}
+}

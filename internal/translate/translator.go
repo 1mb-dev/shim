@@ -14,9 +14,6 @@ import (
 var (
 	ErrUpstreamMalformed = errors.New("upstream returned malformed JSON")
 	ErrBackTranslation   = errors.New("back-translation failed")
-	// ErrStreamingUnsupported marks a translator that cannot (yet) stream; the
-	// server maps it to 501 Not Implemented rather than a misleading 502.
-	ErrStreamingUnsupported = errors.New("streaming not supported by this adapter")
 )
 
 // maxStopSequences is the OpenAI cap on stop[] entries. The cap lives in the
@@ -171,12 +168,6 @@ func (identity) FromUpstream(body []byte, _ string) ([]byte, AnthropicUsage, err
 		return nil, AnthropicUsage{}, fmt.Errorf("%w: %w", ErrUpstreamMalformed, err)
 	}
 	return body, probe.Usage, nil
-}
-
-// StreamChunks is implemented in Phase 3 (true Anthropic-SSE byte-passthrough).
-// Until then it reports ErrStreamingUnsupported so the server returns 501.
-func (identity) StreamChunks(*http.Response, string) (func() ([]byte, bool, error), *AnthropicUsage, error) {
-	return nil, nil, fmt.Errorf("%w: anthropic-passthrough streaming lands in v0.3.0 Phase 3", ErrStreamingUnsupported)
 }
 
 func decodeOpenAIResponse(body []byte) (*OpenAIResponse, error) {

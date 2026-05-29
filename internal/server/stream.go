@@ -108,6 +108,7 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 
 	if err := streamSSE(w, next); err != nil {
 		// Connection already in SSE mode (or flush unsupported); can only log.
-		s.log.Error("sse write failed", slog.String("error", err.Error()))
+		// Covers both a client write failure and an upstream read/iterator error.
+		s.log.Error("sse stream failed", slog.String("error", err.Error()))
 	}
 }

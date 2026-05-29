@@ -22,14 +22,10 @@ import (
 // Anthropic shape is a 500 (ErrBackTranslation — shim's mapping fell short);
 // a malformed or otherwise unusable upstream body is a 502 (gateway problem).
 func upstreamErrStatus(err error) int {
-	switch {
-	case errors.Is(err, translate.ErrStreamingUnsupported):
-		return http.StatusNotImplemented
-	case errors.Is(err, translate.ErrBackTranslation):
+	if errors.Is(err, translate.ErrBackTranslation) {
 		return http.StatusInternalServerError
-	default:
-		return http.StatusBadGateway
 	}
+	return http.StatusBadGateway
 }
 
 // recordStopCap emits the loud-fail (warn log + rewrite metric) when the
