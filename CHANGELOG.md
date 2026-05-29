@@ -3,6 +3,29 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] — Translator seam + anthropic-passthrough (2026-05-29)
+
+The "v1 shape": a pluggable per-adapter translator carries two transport
+dialects, and a transparent passthrough adapter delivers shim's observability
+in front of a native Anthropic endpoint with zero translation risk. See
+`docs/adr/0001-translator-seam-two-axis.md`.
+
+### Added
+- `translate.Translator` interface + `Adapter.Translator()` — relocates dialect knowledge out of the request handlers (which hard-wired `AnthropicToOpenAI` since Stage 0) into the adapter. Handlers are now dialect-free. DeepSeek returns `AnthropicOpenAI()`.
+- `internal/adapter/anthropic` — transparent passthrough to a native Anthropic Messages endpoint (`ADAPTER=anthropic`). Identity `MapModel`; `x-api-key` auth; forwards client `anthropic-version`/`anthropic-beta` (injects `2023-06-01` + logs when absent). Request and non-streaming response forwarded **byte-for-byte** (fields shim doesn't model survive).
+- True Anthropic-SSE byte-passthrough for the passthrough path (`translate.Identity().StreamChunks`): scans the upstream stream per-event and forwards each verbatim, live, while sniffing usage from `message_start`/`message_delta`. Not buffer-then-restream.
+- Upstream response-header forwarding on an allowlist (`request-id`, `retry-after`, `anthropic-ratelimit-*`); hop-by-hop/content-framing headers never forwarded.
+- `adapter.WithInboundHeaders`/`InboundHeaders` — context helper so passthrough can forward selected client headers without a `BuildRequest` signature change.
+
+### Changed
+- `ADAPTER` selects `deepseek` or `anthropic`; unknown values fail at startup (no silent fallback). `UPSTREAM_BASE_URL` defaults per adapter.
+- OpenAI `stop_sequences` cap moved from the dialect-agnostic handler into the OpenAI translator (passthrough is no longer capped); the server still emits the loud-fail metric/log via the translator's `stopCapped` report.
+- Non-streaming response path writes the translator's response **bytes** (was: re-encode a parsed struct) — lossless for passthrough.
+
+### Docs
+- README: passthrough adapter + "when to use", response-header forwarding, per-dialect streaming caveat, token-delta tokenizer-drift note. Corrected stale operational-limit timeouts (`Client.Timeout` 60→180s, `WriteTimeout` 70→200s) and the `init()`-registration description (adapters register explicitly in `main.go`).
+- ADR 0001 — the Translator seam + transport-dialect/provider-quirk two-axis model.
+
 ## [0.0.2] — Stage 2.6c (2026-05-27)
 
 Full reasoning_content ↔ thinking-block roundtrip. Stage 2.6b's

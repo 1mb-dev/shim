@@ -3,15 +3,18 @@
 A Go-native proxy that lets Claude Code run against any OpenAI-compatible
 model provider. Set `ANTHROPIC_BASE_URL` to point at shim, and Claude Code's
 Messages-API requests get translated into OpenAI ChatCompletions and routed
-to your configured upstream. Stage 0/1 ships one adapter: DeepSeek.
+to your configured upstream. Two adapters ship: **DeepSeek** (Anthropic↔OpenAI
+translation) and **anthropic-passthrough** (transparent proxy to a native
+Anthropic-Messages endpoint, no translation).
 
 Single static binary. Stdlib-leaning, with one runtime dependency:
 `pkoukk/tiktoken-go` (cl100k_base BPE tables, embedded at compile time —
 no network fetch at startup). See [Dependencies](#dependencies).
 
-**Status: Stage 1, 1.5, 2 shipped.** What's listed under "What works" is
-what's wired. Anything in "What doesn't" returns a clear error rather
-than silently misbehaving.
+**Status: v0.3.0.** A pluggable per-adapter translator carries two transport
+dialects — OpenAI ChatCompletions and identity (passthrough). What's listed
+under "What works" is what's wired. Anything in "What doesn't" returns a clear
+error rather than silently misbehaving.
 
 ## When NOT to use shim
 
@@ -38,10 +41,15 @@ No proxy needed.
   traffic — model name rewrite, `stop_sequences` truncation past OpenAI's
   cap of 4, etc. — it logs the event and increments a counter in
   `/v1/metrics`. Silent forwarding of modified requests is a bug.
-- **Multi-provider routing (Stage 3+).** Once shim ships a second adapter
-  (OpenAI proper / Groq / Ollama — selection pending), the same
-  measurement layer compares behaviour across providers. The Adapter
-  interface in `internal/adapter/` is the contract.
+- **Transparent observability in front of real Anthropic.** The
+  anthropic-passthrough adapter forwards requests and responses verbatim to a
+  native Anthropic endpoint — zero translation risk — so you get shim's
+  redacted logs, `/v1/metrics`, and loud-fail in front of Claude itself. See
+  [Transparent passthrough](#transparent-passthrough).
+- **Multi-provider routing.** The Adapter interface in `internal/adapter/` is
+  the contract; the per-adapter translator handles the transport dialect. A
+  second OpenAI-dialect provider (OpenAI proper / Groq / OpenRouter) lands on
+  the same measurement layer.
 
 ---
 
@@ -53,7 +61,8 @@ No proxy needed.
 - `GET /health` — `{"status":"ok"}`.
 - Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences` (capped at 4 per OpenAI's limit; over-cap requests are truncated and a `warn` log line emitted), `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
 - Thinking control plane + reasoning_content roundtrip (Stage 2.6c): `thinking: {type, ...}` request field is passed through identity to DeepSeek. When upstream emits `reasoning_content` on a response, shim translates it to an Anthropic thinking block (`{type: "thinking", thinking: ..., signature: "shim-passthrough-v1"}`); when clients echo thinking blocks back on continuations, shim translates them back to `reasoning_content` on the outbound request. Block ordering: thinking precedes tool_use in assistant turns per Anthropic spec. Multiple thinking blocks concatenate (newline-separated) into one reasoning_content string. The signature is a constant — shim does not verify on roundtrip; see "Errors and debugging" for the design rationale.
-- One adapter: **DeepSeek** (`https://api.deepseek.com/v1`, OpenAI-compatible endpoint).
+- Two adapters: **DeepSeek** (`https://api.deepseek.com/v1`, OpenAI-compatible — translates) and **anthropic-passthrough** (`https://api.anthropic.com`, native Anthropic Messages — forwards verbatim). Select via `ADAPTER`. See [Transparent passthrough](#transparent-passthrough).
+- Upstream response headers forwarded on an allowlist: `request-id`, `retry-after`, and the `anthropic-ratelimit-*` family (so clients can trace requests and back off). Content-framing and hop-by-hop headers are never forwarded — shim sets those itself.
 - Model mapping: Claude Code sends `claude-opus*`/`claude-sonnet*`/`claude-haiku*`; shim routes opus to `deepseek-v4-pro`, sonnet and haiku to `deepseek-v4-flash`. These are the only two values DeepSeek's [OpenAI-format chat-completions API](https://api-docs.deepseek.com/api/create-chat-completion) accepts as `model`. (The `deepseek-v4-pro[1m]` 1M-context variant shown in DeepSeek's [Claude Code guide](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code) only works on DeepSeek's native Anthropic endpoint, not the OpenAI-format one shim uses.) Override per role via `UPSTREAM_OPUS_MODEL` / `UPSTREAM_SONNET_MODEL` / `UPSTREAM_HAIKU_MODEL`. Non-claude-prefix names pass through unchanged unless `UPSTREAM_MODEL` is set as a catch-all. Every rewrite logs `info` and increments `rewrites.model` in `/v1/metrics`.
 - `shim run [args...]` launcher: locates `claude` on PATH, injects `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY=shim`, execs it, propagates exit code. Tested end-to-end with `claude --bare -p`.
 - Redacted-by-default JSON logs via `log/slog`. `Authorization`, prompt/message content, URL query strings, and credential-shaped keys are scrubbed at log-write time.
@@ -64,13 +73,13 @@ No proxy needed.
 These all return a clear error — never silent forwarding.
 
 - **`thinking: {display: "omitted"}` / `redacted_thinking` blocks.** Anthropic supports a "show me the signature but redact the content" mode for thinking blocks. shim doesn't — there's no stateless path to reproduce a signature for absent content. Defer until a real user behind the feature exists.
-- **Streaming `delta.reasoning_content` per-token forwarding.** shim's buffer-then-restream MVP collapses reasoning + content into one final response. Reasoning streamed in real time will land alongside true SSE passthrough.
-- **Prompt caching markers.** Not translated.
+- **Per-token streaming for the *translating* path (DeepSeek).** shim's buffer-then-restream MVP collapses reasoning + content into one final response, then emits the canonical SSE sequence in one burst. Real per-token streaming for translated providers is future work. (anthropic-passthrough already streams live — see the streaming caveat.)
+- **Prompt caching markers.** Not translated (passthrough forwards them verbatim, untranslated).
 - **Housekeeping short-circuits** (e.g. quota probes, title generation). Forwarded to upstream as normal traffic.
-- **Multiple adapters.** Only DeepSeek in Stage 0.
+- **A second OpenAI-dialect provider.** Only DeepSeek (translating) + anthropic-passthrough (transparent) today.
 - **TUI / GUI / chatbot wrappers.** Not in scope.
 
-**Streaming caveat:** Stage 0 ships a buffer-then-restream MVP — shim drives the upstream as non-streaming, then emits the canonical Anthropic SSE event sequence in one burst. Clients see the right protocol; per-token latency benefit lands when true upstream SSE pass-through ships.
+**Streaming caveat (per dialect):** the **translating** path (DeepSeek) is buffer-then-restream — shim drives the upstream non-streaming, then emits the canonical Anthropic SSE sequence in one burst (right protocol, no per-token latency benefit yet). The **passthrough** path streams the upstream's native Anthropic SSE through live, event-by-event, byte-for-byte.
 
 ## Install
 
@@ -110,13 +119,13 @@ Copy `.env.example` to `.env` and fill in `UPSTREAM_API_KEY`. All variables:
 |---|---|---|
 | `BIND_ADDR` | `127.0.0.1` | Listen address. **Do not bind 0.0.0.0** unless you accept that the proxy carries your upstream API key and has no auth of its own. |
 | `PORT` | `8082` | TCP port. |
-| `ADAPTER` | `deepseek` | Adapter to use. Stage 0/1 only registers `deepseek`. |
-| `UPSTREAM_API_KEY` | _required_ | Bearer token sent to the upstream. |
-| `UPSTREAM_BASE_URL` | `https://api.deepseek.com/v1` | Upstream root. |
-| `UPSTREAM_OPUS_MODEL` | (empty → `deepseek-v4-pro`) | Override for `claude-opus*` inputs. |
-| `UPSTREAM_SONNET_MODEL` | (empty → `deepseek-v4-flash`) | Override for `claude-sonnet*` inputs. |
-| `UPSTREAM_HAIKU_MODEL` | (empty → `deepseek-v4-flash`) | Override for `claude-haiku*` inputs. |
-| `UPSTREAM_MODEL` | (empty) | Catch-all override for non-claude-prefix names (e.g. legacy `claude-3-5-sonnet-*`, direct `deepseek-v4-pro`). Empty = pass through. |
+| `ADAPTER` | `deepseek` | `deepseek` (translating) or `anthropic` (transparent passthrough). Unknown values fail at startup. |
+| `UPSTREAM_API_KEY` | _required_ | Credential sent upstream — `Authorization: Bearer` for DeepSeek, `x-api-key` for anthropic-passthrough. |
+| `UPSTREAM_BASE_URL` | per-adapter default | Upstream root. Default `https://api.deepseek.com/v1` (deepseek) or `https://api.anthropic.com` (anthropic). |
+| `UPSTREAM_OPUS_MODEL` | (empty → `deepseek-v4-pro`) | Override for `claude-opus*`. DeepSeek only — passthrough forwards the model name unchanged. |
+| `UPSTREAM_SONNET_MODEL` | (empty → `deepseek-v4-flash`) | Override for `claude-sonnet*`. DeepSeek only. |
+| `UPSTREAM_HAIKU_MODEL` | (empty → `deepseek-v4-flash`) | Override for `claude-haiku*`. DeepSeek only. |
+| `UPSTREAM_MODEL` | (empty) | Catch-all override for non-claude-prefix names. DeepSeek only; empty = pass through. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `LOG_REDACT` | `true` | Scrub secrets and prompt content from logs. Set `false` for local debugging only. |
 | `MAX_REQUEST_BYTES` | `1048576` | Oversize body returns HTTP 413 Anthropic-shaped error. |
@@ -137,24 +146,59 @@ Logs scrub `Authorization`, prompt/message content, URL query strings,
 and credential-shaped keys by default (`LOG_REDACT=true`). Set
 `LOG_REDACT=false` only for local debugging.
 
+## Transparent passthrough
+
+Set `ADAPTER=anthropic` to run shim as a transparent proxy in front of a native
+Anthropic Messages endpoint:
+
+```sh
+ADAPTER=anthropic
+UPSTREAM_BASE_URL=https://api.anthropic.com   # default; override for a compatible endpoint
+UPSTREAM_API_KEY=<your Anthropic key>          # sent upstream as x-api-key
+```
+
+shim does **no translation** on this path: the request body is forwarded
+byte-for-byte (so fields shim doesn't model — `metadata`, `top_k`,
+`service_tier`, … — survive), the response body is returned verbatim, and
+streaming is true Anthropic-SSE pass-through (event-by-event, live). shim
+forwards the client's `anthropic-version` / `anthropic-beta` headers when
+present and injects `2023-06-01` (logged) when absent.
+
+The point is observability with zero translation risk: shim's redacted logs,
+`/v1/metrics`, and loud-fail measurement in front of real Claude. Because there
+is no translation, `/v1/metrics` `token_delta` here is purely a cl100k-vs-
+Anthropic tokenizer drift signal (see [Token counting](#token-counting)).
+
+If you want *only* a transparent Anthropic proxy with no measurement, you don't
+need shim — point Claude Code at the endpoint directly. shim earns its place
+when you want the measurement and loud-fail layer.
+
+**Limitation (v0.3.0):** transparency covers **success** responses and the
+header allowlist. On an upstream **error**, shim still normalizes the status
+(e.g. a 429 surfaces as a 502) and replaces the body with its own
+Anthropic-shaped error envelope — the upstream's actual status and error body
+are captured only in the `upstream error` log line, not passed to the client.
+Verbatim error pass-through for the passthrough path lands in v0.3.1.
+
 ## Operational limits
 
-Hardcoded in Stage 0 (not env-configurable):
+Hardcoded (not env-configurable):
 
 | Limit | Value | Source |
 |---|---|---|
 | `ReadHeaderTimeout` | 10s | `internal/server/server.go` |
-| `WriteTimeout` | 70s | `internal/server/server.go` — caps streaming wall-clock |
+| `WriteTimeout` | 200s | `internal/server/server.go` — caps streaming wall-clock |
 | `IdleTimeout` | 120s | `internal/server/server.go` |
 | `MaxHeaderBytes` | 1 MiB | `internal/server/server.go` |
-| Upstream `Client.Timeout` | 60s | `internal/adapter/deepseek/deepseek.go` |
-| Upstream `TLSHandshakeTimeout` | 10s | `internal/adapter/deepseek/deepseek.go` |
-| Upstream `ResponseHeaderTimeout` | 30s | `internal/adapter/deepseek/deepseek.go` |
+| Upstream `Client.Timeout` | 180s | `internal/server/server.go` (`newUpstreamClient`) |
+| Upstream `TLSHandshakeTimeout` | 10s | `internal/server/server.go` |
+| Upstream `ResponseHeaderTimeout` | 30s | `internal/server/server.go` |
 
-The 70s server `WriteTimeout` is the hard upper bound on any single
-response (streaming or non-streaming). Long completions that need more
-than ~60s upstream will be truncated mid-emit; the headroom over
-`Client.Timeout` is thin by design.
+The 200s server `WriteTimeout` is the hard upper bound on any single
+response (streaming or non-streaming); it's sized to outlive the 180s upstream
+`Client.Timeout` so an upstream cancellation surfaces as a recordable upstream
+error rather than a server-side write timeout. The 180s ceiling covers
+reasoning-mode generations under the buffer-then-restream MVP.
 
 ## Run
 
@@ -244,7 +288,10 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
   tokenizer (DeepSeek's is not published), so a wide gap means the two
   tokenizers disagree on this traffic shape, not that one is wrong. If the
   upstream omits the `usage` block, shim skips the observation rather than
-  recording zeros.
+  recording zeros. For **anthropic-passthrough** the upstream *is* Anthropic, so
+  the delta compares cl100k against Anthropic's (also unpublished) tokenizer —
+  still a drift signal, not a verification of shim, since passthrough does no
+  translation.
 - `rewrites.model` counts how often shim replaced the requested model name
   (Stage 0's DeepSeek adapter rewrites every request, so this matches
   `/v1/messages` `n`). `rewrites.stop_sequences` counts over-cap truncations.
@@ -374,9 +421,10 @@ cmd/shim/             # CLI entry: shim, shim run
 internal/
   config/             # zero-dep .env loader
   obslog/             # log/slog with redaction
-  adapter/            # interface + registry
-    deepseek/         # Stage 0 adapter
-  translate/          # Anthropic ↔ OpenAI
+  adapter/            # interface + registry + InboundHeaders ctx helper
+    deepseek/         # OpenAI-dialect (translating) adapter
+    anthropic/        # native-Anthropic (transparent passthrough) adapter
+  translate/          # Anthropic ↔ OpenAI + per-adapter Translator seam (passthrough.go = identity)
   tokens/             # cl100k_base BPE counter
   measure/            # /v1/metrics collector (latency, token delta, rewrites)
   launcher/           # shim run
@@ -385,8 +433,9 @@ testdata/fixtures/    # recorded upstream responses for tests
 ```
 
 Adding a provider is a new sub-package under `internal/adapter/` that
-implements `adapter.Adapter` and registers itself in `init()`. Add a blank
-import in `cmd/shim/main.go` and a config switch on `ADAPTER`.
+implements `adapter.Adapter` (including `Translator()` for its transport
+dialect). Construct it in `cmd/shim/main.go`'s `registerAdapter` switch and
+call `adapter.Register` explicitly — there is no `init()`-time registration.
 
 ## License
 
