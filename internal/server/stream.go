@@ -84,6 +84,7 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 	// equivalent to NormalizeResponse's error path on the non-stream path.
 	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
 		body, _ := io.ReadAll(upstream.Body)
+		copyForwardedHeaders(w.Header(), upstream.Header)
 		s.writeUpstreamError(w, "/v1/messages", mappedModel, upstream.StatusCode, body,
 			fmt.Errorf("upstream status %d", upstream.StatusCode))
 		return
@@ -106,6 +107,7 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 		}
 	}()
 
+	copyForwardedHeaders(w.Header(), upstream.Header)
 	if err := streamSSE(w, next); err != nil {
 		// Connection already in SSE mode (or flush unsupported); can only log.
 		// Covers both a client write failure and an upstream read/iterator error.

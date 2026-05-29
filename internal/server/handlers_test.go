@@ -88,6 +88,56 @@ func (s *stub) NormalizeResponse(r *http.Response) ([]byte, error) {
 
 func (s *stub) Translator() translate.Translator { return translate.AnthropicOpenAI() }
 
+// TestMessages_ForwardsUpstreamHeaders: allowlisted upstream response headers
+// reach the client on success; non-allowlisted ones don't.
+func TestMessages_ForwardsUpstreamHeaders(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	s.mu.Lock()
+	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Request-Id", "req_abc")
+		w.Header().Set("Anthropic-Ratelimit-Requests-Remaining", "42")
+		w.Header().Set("X-Internal", "secret")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}
+	s.mu.Unlock()
+	srv, _ := newTestServer(t, s)
+
+	resp := doPOST(t, srv, "/v1/messages", `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Request-Id"); got != "req_abc" {
+		t.Errorf("Request-Id not forwarded: %q", got)
+	}
+	if got := resp.Header.Get("Anthropic-Ratelimit-Requests-Remaining"); got != "42" {
+		t.Errorf("anthropic-ratelimit-* not forwarded: %q", got)
+	}
+	if resp.Header.Get("X-Internal") != "" {
+		t.Error("non-allowlisted header X-Internal must not be forwarded")
+	}
+}
+
+// TestMessages_ForwardsHeadersOnUpstreamError: a 429's Retry-After reaches the
+// client even though the response goes through the upstream-error path.
+func TestMessages_ForwardsHeadersOnUpstreamError(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	s.mu.Lock()
+	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate_limited"}`))
+	}
+	s.mu.Unlock()
+	srv, _ := newTestServer(t, s)
+
+	resp := doPOST(t, srv, "/v1/messages", `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Retry-After"); got != "30" {
+		t.Errorf("Retry-After not forwarded on upstream error: %q", got)
+	}
+}
+
 // TestUpstreamErrStatus pins the translator-error → HTTP status mapping:
 // back-translation → 500, everything else → 502.
 func TestUpstreamErrStatus(t *testing.T) {

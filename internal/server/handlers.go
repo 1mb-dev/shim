@@ -28,6 +28,32 @@ func upstreamErrStatus(err error) int {
 	return http.StatusBadGateway
 }
 
+// copyForwardedHeaders passes a fixed allowlist of upstream response headers
+// through to the client: tracing (request-id) + rate-limit/backoff
+// (retry-after, anthropic-ratelimit-*). It is dialect-agnostic — each upstream
+// sets what it sets, so headers a given provider doesn't emit are simply not
+// forwarded. Content-framing and hop-by-hop headers (Content-Length,
+// Transfer-Encoding, Connection, Content-Type, Content-Encoding) are NEVER
+// forwarded; shim owns those.
+func copyForwardedHeaders(dst, src http.Header) {
+	for k, vals := range src {
+		if !forwardResponseHeader(http.CanonicalHeaderKey(k)) {
+			continue
+		}
+		for _, v := range vals {
+			dst.Add(k, v)
+		}
+	}
+}
+
+func forwardResponseHeader(canonicalKey string) bool {
+	switch canonicalKey {
+	case "Request-Id", "Retry-After":
+		return true
+	}
+	return strings.HasPrefix(canonicalKey, "Anthropic-Ratelimit-")
+}
+
 // recordStopCap emits the loud-fail (warn log + rewrite metric) when the
 // translator capped stop sequences for its dialect. dropped==0 is a no-op, so
 // passthrough (which never caps) records nothing. Keeps the modification
@@ -231,6 +257,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	normalised, err := s.adapter.NormalizeResponse(upstream)
 	if err != nil {
+		// Forward rate-limit/tracing headers on errors too — a 429's
+		// Retry-After / anthropic-ratelimit-* is exactly when a client needs them.
+		copyForwardedHeaders(w.Header(), upstream.Header)
 		s.writeUpstreamError(w, "/v1/messages", mappedModel, upstream.StatusCode, normalised, err)
 		return
 	}
@@ -250,6 +279,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		usage.OutputTokens,
 	)
 
+	copyForwardedHeaders(w.Header(), upstream.Header)
 	w.Header().Set("Content-Type", "application/json")
 	if _, err := w.Write(respBody); err != nil {
 		// Headers already committed; can't change status. Log for visibility.
