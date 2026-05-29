@@ -8,8 +8,10 @@ import "encoding/json"
 // --- Anthropic Messages API shapes ---
 
 // AnthropicRequest mirrors the documented Anthropic Messages request body.
-// Fields irrelevant to Stage 0 are intentionally omitted (e.g. metadata,
-// service_tier) — they round-trip via json.Unmarshal's ignored-field path.
+// Fields shim doesn't act on are omitted (e.g. metadata, service_tier, top_k);
+// json.Unmarshal DROPS them, so re-marshalling this struct loses them. The
+// translating path only needs the modelled fields; the identity (passthrough)
+// translator forwards the original request bytes verbatim to avoid the drop.
 type AnthropicRequest struct {
 	Model         string                   `json:"model"`
 	Messages      []AnthropicMessage       `json:"messages"`

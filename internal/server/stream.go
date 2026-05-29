@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/1mb-dev/shim/internal/adapter"
 	"github.com/1mb-dev/shim/internal/translate"
 )
 
@@ -49,19 +50,20 @@ func streamSSE(w http.ResponseWriter, next func() ([]byte, bool, error)) error {
 // Errors discovered BEFORE the SSE stream starts go out as Anthropic-shaped
 // JSON via writeError; errors mid-stream are logged and the connection
 // dropped (we cannot retroactively change response status).
-func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, req *translate.AnthropicRequest) {
+func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, req *translate.AnthropicRequest, raw []byte) {
 	t := s.adapter.Translator()
 	mappedModel := s.adapter.MapModel(req.Model)
 	s.logModelRewrite(req.Model, mappedModel)
 
-	openaiBody, err := t.ToUpstream(req, mappedModel)
+	openaiBody, stopCapped, err := t.ToUpstream(req, raw, mappedModel)
 	if err != nil {
 		writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
 			"translation: "+err.Error())
 		return
 	}
+	s.recordStopCap(req, stopCapped)
 
-	httpReq, err := s.adapter.BuildRequest(r.Context(), openaiBody)
+	httpReq, err := s.adapter.BuildRequest(adapter.WithInboundHeaders(r.Context(), r.Header), openaiBody)
 	if err != nil {
 		writeError(w, s.log, http.StatusInternalServerError, errAPI,
 			"build upstream request: "+err.Error())

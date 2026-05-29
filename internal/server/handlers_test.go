@@ -88,6 +88,25 @@ func (s *stub) NormalizeResponse(r *http.Response) ([]byte, error) {
 
 func (s *stub) Translator() translate.Translator { return translate.AnthropicOpenAI() }
 
+// TestUpstreamErrStatus pins the translator-error → HTTP status mapping:
+// streaming-unsupported → 501, back-translation → 500, everything else → 502.
+func TestUpstreamErrStatus(t *testing.T) {
+	cases := []struct {
+		err  error
+		want int
+	}{
+		{translate.ErrStreamingUnsupported, http.StatusNotImplemented},
+		{translate.ErrBackTranslation, http.StatusInternalServerError},
+		{translate.ErrUpstreamMalformed, http.StatusBadGateway},
+		{io.EOF, http.StatusBadGateway},
+	}
+	for _, c := range cases {
+		if got := upstreamErrStatus(c.err); got != c.want {
+			t.Errorf("upstreamErrStatus(%v) = %d, want %d", c.err, got, c.want)
+		}
+	}
+}
+
 // errKeyMissing matches the substring preflightAdapter scans for.
 var errKeyMissing = errStr("UPSTREAM_API_KEY not set")
 
@@ -714,12 +733,12 @@ func TestCountTokens(t *testing.T) {
 	}
 }
 
-// TestMessages_EncodeFailureLogged: /v1/messages succeeded upstream, but the
-// final json.Encode of the Anthropic response into the client connection
-// fails (client disconnected, write error, etc). Headers + 200 are already
-// committed by stdlib server in production — there's no way to reverse-out.
-// Loud-fail through the log is the only honest signal.
-func TestMessages_EncodeFailureLogged(t *testing.T) {
+// TestMessages_WriteFailureLogged: /v1/messages succeeded upstream, but the
+// final write of the response bytes into the client connection fails (client
+// disconnected, write error, etc). Headers + 200 are already committed by the
+// stdlib server in production — there's no way to reverse-out. Loud-fail
+// through the log is the only honest signal.
+func TestMessages_WriteFailureLogged(t *testing.T) {
 	s := newStub()
 	defer s.close()
 	srv, logBuf := newTestServer(t, s)
@@ -730,11 +749,11 @@ func TestMessages_EncodeFailureLogged(t *testing.T) {
 
 	srv.handleMessages(fw, req)
 
-	if !strings.Contains(logBuf.String(), `"response encode failed"`) {
-		t.Fatalf("expected response encode failed log, got: %s", logBuf.String())
+	if !strings.Contains(logBuf.String(), `"response write failed"`) {
+		t.Fatalf("expected response write failed log, got: %s", logBuf.String())
 	}
 	if !strings.Contains(logBuf.String(), `"path":"/v1/messages"`) {
-		t.Errorf("encode-failure log missing path key: %s", logBuf.String())
+		t.Errorf("write-failure log missing path key: %s", logBuf.String())
 	}
 }
 

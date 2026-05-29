@@ -14,7 +14,15 @@ import (
 var (
 	ErrUpstreamMalformed = errors.New("upstream returned malformed JSON")
 	ErrBackTranslation   = errors.New("back-translation failed")
+	// ErrStreamingUnsupported marks a translator that cannot (yet) stream; the
+	// server maps it to 501 Not Implemented rather than a misleading 502.
+	ErrStreamingUnsupported = errors.New("streaming not supported by this adapter")
 )
+
+// maxStopSequences is the OpenAI cap on stop[] entries. The cap lives in the
+// OpenAI-dialect translator (not the server handler) so passthrough is
+// unaffected.
+const maxStopSequences = 4
 
 // Translator converts between the Anthropic Messages wire format and one
 // upstream transport dialect. shim supports two dialects: OpenAI
@@ -26,15 +34,22 @@ var (
 // touches the client ResponseWriter — the server handler owns the writer and
 // the flush loop. This keeps dialect knowledge out of the handler entirely.
 type Translator interface {
-	// ToUpstream builds the upstream request body from an Anthropic request.
-	// mappedModel is the upstream model name (from Adapter.MapModel). The
+	// ToUpstream builds the upstream request body. req is the parsed request;
+	// raw is the original inbound bytes (the identity translator forwards them
+	// verbatim, so client fields shim doesn't model survive). mappedModel is
+	// the upstream model name (from Adapter.MapModel). stopCapped reports how
+	// many stop sequences the dialect dropped, so the server emits the
+	// loud-fail metric/log (thesis-2) while the translator stays pure. The
 	// implementation owns the upstream `stream` flag for its dialect.
-	ToUpstream(req *AnthropicRequest, mappedModel string) ([]byte, error)
+	ToUpstream(req *AnthropicRequest, raw []byte, mappedModel string) (body []byte, stopCapped int, err error)
 
 	// FromUpstream converts a buffered (non-streaming) upstream response body
-	// back to an Anthropic response, surfacing normalized usage so the caller
-	// records the token delta without knowing the dialect.
-	FromUpstream(body []byte, originalModel string) (*AnthropicResponse, AnthropicUsage, error)
+	// into the Anthropic-shaped response BYTES the client should receive, plus
+	// normalized usage so the caller records the token delta without knowing
+	// the dialect. Returning bytes (not a struct) lets the identity translator
+	// forward the upstream body verbatim — lossless passthrough, no field-drop
+	// from re-encoding through shim's response struct.
+	FromUpstream(body []byte, originalModel string) (respBody []byte, usage AnthropicUsage, err error)
 
 	// StreamChunks returns a pull iterator over wire-ready Anthropic SSE event
 	// bytes (`event: <name>\ndata: <json>\n\n`). The caller writes + flushes
@@ -54,21 +69,34 @@ func AnthropicOpenAI() Translator { return anthropicOpenAI{} }
 
 type anthropicOpenAI struct{}
 
-func (anthropicOpenAI) ToUpstream(req *AnthropicRequest, mappedModel string) ([]byte, error) {
+func (anthropicOpenAI) ToUpstream(req *AnthropicRequest, _ []byte, mappedModel string) ([]byte, int, error) {
 	o, err := AnthropicToOpenAI(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	o.Model = mappedModel
 	o.Stream = false // MVP: buffer-then-restream
+	// OpenAI rejects >maxStopSequences stop strings with a 400 that looks like
+	// a shim bug. Cap here (a dialect concern) instead of in the dialect-
+	// agnostic handler, so passthrough is unaffected; report the drop so the
+	// server emits the loud-fail metric/log.
+	stopCapped := 0
+	if n := len(o.Stop); n > maxStopSequences {
+		stopCapped = n - maxStopSequences
+		o.Stop = o.Stop[:maxStopSequences]
+	}
 	// Marshal cannot fail here: every json.RawMessage in o originates from a
 	// successfully-unmarshaled inbound request, so the only realistic error
 	// source is the client's request shape (already surfaced by
 	// AnthropicToOpenAI above) — the server treats a ToUpstream error as a 400.
-	return json.Marshal(o)
+	b, err := json.Marshal(o)
+	if err != nil {
+		return nil, 0, err
+	}
+	return b, stopCapped, nil
 }
 
-func (anthropicOpenAI) FromUpstream(body []byte, originalModel string) (*AnthropicResponse, AnthropicUsage, error) {
+func (anthropicOpenAI) FromUpstream(body []byte, originalModel string) ([]byte, AnthropicUsage, error) {
 	o, err := decodeOpenAIResponse(body)
 	if err != nil {
 		return nil, AnthropicUsage{}, err
@@ -77,7 +105,12 @@ func (anthropicOpenAI) FromUpstream(body []byte, originalModel string) (*Anthrop
 	if err != nil {
 		return nil, AnthropicUsage{}, fmt.Errorf("%w: %w", ErrBackTranslation, err)
 	}
-	return resp, openAIUsage(o), nil
+	respBody, err := json.Marshal(resp)
+	if err != nil {
+		// Marshalling shim's own response struct: unreachable in practice.
+		return nil, AnthropicUsage{}, fmt.Errorf("%w: encode response: %w", ErrBackTranslation, err)
+	}
+	return respBody, openAIUsage(o), nil
 }
 
 func (anthropicOpenAI) StreamChunks(resp *http.Response, originalModel string) (func() ([]byte, bool, error), *AnthropicUsage, error) {
@@ -108,6 +141,42 @@ func (anthropicOpenAI) StreamChunks(resp *http.Response, originalModel string) (
 		return b, true, nil
 	}
 	return next, &usage, nil
+}
+
+// Identity returns the passthrough Translator for a native-Anthropic upstream:
+// the request is forwarded verbatim and the response body is returned
+// unchanged, with no dialect conversion. Used by the anthropic-passthrough
+// adapter. Forwarding bytes verbatim is the point — shim must not drop
+// Anthropic response fields it doesn't model.
+func Identity() Translator { return identity{} }
+
+type identity struct{}
+
+// ToUpstream forwards the client's request BYTES verbatim — fields shim does
+// not model (metadata, top_k, service_tier, …) survive, which re-marshalling
+// the parsed struct would silently drop. No stop-sequence cap: that's an
+// OpenAI-dialect concern, not Anthropic's. mappedModel is unused (the adapter's
+// MapModel is identity); req is unused (raw is authoritative).
+func (identity) ToUpstream(_ *AnthropicRequest, raw []byte, _ string) ([]byte, int, error) {
+	return raw, 0, nil
+}
+
+// FromUpstream returns the upstream body verbatim (lossless) and sniffs usage
+// for measurement without re-encoding through shim's response struct.
+func (identity) FromUpstream(body []byte, _ string) ([]byte, AnthropicUsage, error) {
+	var probe struct {
+		Usage AnthropicUsage `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return nil, AnthropicUsage{}, fmt.Errorf("%w: %w", ErrUpstreamMalformed, err)
+	}
+	return body, probe.Usage, nil
+}
+
+// StreamChunks is implemented in Phase 3 (true Anthropic-SSE byte-passthrough).
+// Until then it reports ErrStreamingUnsupported so the server returns 501.
+func (identity) StreamChunks(*http.Response, string) (func() ([]byte, bool, error), *AnthropicUsage, error) {
+	return nil, nil, fmt.Errorf("%w: anthropic-passthrough streaming lands in v0.3.0 Phase 3", ErrStreamingUnsupported)
 }
 
 func decodeOpenAIResponse(body []byte) (*OpenAIResponse, error) {

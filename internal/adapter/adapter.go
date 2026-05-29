@@ -22,13 +22,16 @@ import (
 	"github.com/1mb-dev/shim/internal/translate"
 )
 
-// Adapter normalises one OpenAI-compatible upstream. The translator emits a
-// canonical OpenAI ChatCompletions request body; the adapter wraps it in an
-// http.Request bound to its upstream, then normalises the response back to
-// canonical OpenAI shape so the translator can convert to Anthropic Messages.
+// Adapter binds shim to one upstream provider across two axes: the transport
+// dialect (which Translator it returns — OpenAI-ChatCompletions for DeepSeek,
+// identity for anthropic-passthrough) and provider quirks (model-name format,
+// auth/header peculiarities, response envelopes). The Translator handles the
+// dialect; everything provider-specific lives INSIDE the adapter. The
+// translator stays pure.
 //
-// Quirks (model-name format, header peculiarities, response-shape variances)
-// live INSIDE the adapter. The translator stays pure.
+// BuildRequest wraps the translator's already-built upstream body in an
+// http.Request bound to the provider's endpoint; NormalizeResponse reads the
+// buffered response for the translator's FromUpstream.
 type Adapter interface {
 	// Name returns the lookup key used by config (e.g. "deepseek").
 	Name() string
@@ -57,6 +60,10 @@ type Adapter interface {
 	// responsible for unwrapping any provider-specific envelope. The streaming
 	// path does NOT call this — it gates on HTTP status directly, since a
 	// native-Anthropic passthrough cannot normalize a live SSE stream to bytes.
+	//
+	// The implementation MUST close resp.Body: the non-stream handler delegates
+	// the close here and does not close it itself. Failing to close leaks a
+	// connection per non-stream request.
 	NormalizeResponse(resp *http.Response) ([]byte, error)
 
 	// Translator returns the wire-format translator for this adapter's
@@ -65,6 +72,27 @@ type Adapter interface {
 	// identity translator. The server handler calls it instead of hard-wiring
 	// a dialect, keeping dialect knowledge inside the adapter.
 	Translator() translate.Translator
+}
+
+// inboundHeadersKey is the context key under which the server stashes the
+// client's request headers (via WithInboundHeaders) so adapters that proxy
+// verbatim — e.g. anthropic-passthrough forwarding anthropic-version /
+// anthropic-beta — can read selected ones in BuildRequest without a signature
+// change. Adapters that don't need them ignore it. The server selects which
+// headers an adapter may read; it never forwards inbound Authorization
+// (shim authenticates upstream itself).
+type inboundHeadersKey struct{}
+
+// WithInboundHeaders returns ctx carrying the client's request headers.
+func WithInboundHeaders(ctx context.Context, h http.Header) context.Context {
+	return context.WithValue(ctx, inboundHeadersKey{}, h)
+}
+
+// InboundHeaders returns the client request headers attached by
+// WithInboundHeaders, or nil if none were set.
+func InboundHeaders(ctx context.Context) http.Header {
+	h, _ := ctx.Value(inboundHeadersKey{}).(http.Header)
+	return h
 }
 
 var (

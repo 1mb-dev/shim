@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/1mb-dev/shim/internal/adapter"
 	"github.com/1mb-dev/shim/internal/measure"
 	"github.com/1mb-dev/shim/internal/tokens"
 	"github.com/1mb-dev/shim/internal/translate"
@@ -21,16 +22,30 @@ import (
 // Anthropic shape is a 500 (ErrBackTranslation — shim's mapping fell short);
 // a malformed or otherwise unusable upstream body is a 502 (gateway problem).
 func upstreamErrStatus(err error) int {
-	if errors.Is(err, translate.ErrBackTranslation) {
+	switch {
+	case errors.Is(err, translate.ErrStreamingUnsupported):
+		return http.StatusNotImplemented
+	case errors.Is(err, translate.ErrBackTranslation):
 		return http.StatusInternalServerError
+	default:
+		return http.StatusBadGateway
 	}
-	return http.StatusBadGateway
 }
 
-// maxStopSequences is the OpenAI-imposed cap on stop[] entries. Requests
-// over this are truncated at the server boundary with a warn log rather
-// than forwarded to a 400 that looks like a shim bug.
-const maxStopSequences = 4
+// recordStopCap emits the loud-fail (warn log + rewrite metric) when the
+// translator capped stop sequences for its dialect. dropped==0 is a no-op, so
+// passthrough (which never caps) records nothing. Keeps the modification
+// observable (thesis-2) while the cap itself lives in the OpenAI translator.
+func (s *Server) recordStopCap(req *translate.AnthropicRequest, dropped int) {
+	if dropped == 0 {
+		return
+	}
+	s.log.Warn("stop_sequences truncated",
+		slog.Int("from", len(req.StopSequences)),
+		slog.Int("to", len(req.StopSequences)-dropped),
+	)
+	s.measure.RecordRewriteEvent(measure.RewriteStopSequences)
+}
 
 // upstreamBodyLogBytes caps the bytes of upstream-error body recorded in
 // the `upstream_error` log line. 1024 covers the typical OpenAI-style
@@ -187,19 +202,8 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// OpenAI-compatible upstreams reject stop arrays larger than 4 with a
-	// 400 that looks like a shim bug; cap loudly per thesis-2.
-	if n := len(req.StopSequences); n > maxStopSequences {
-		s.log.Warn("stop_sequences truncated",
-			slog.Int("from", n),
-			slog.Int("to", maxStopSequences),
-		)
-		req.StopSequences = req.StopSequences[:maxStopSequences]
-		s.measure.RecordRewriteEvent(measure.RewriteStopSequences)
-	}
-
 	if req.Stream {
-		s.handleMessagesStream(w, r, &req)
+		s.handleMessagesStream(w, r, &req, body)
 		return
 	}
 
@@ -207,14 +211,15 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	mappedModel := s.adapter.MapModel(req.Model)
 	s.logModelRewrite(req.Model, mappedModel)
 
-	openaiBody, err := t.ToUpstream(&req, mappedModel)
+	openaiBody, stopCapped, err := t.ToUpstream(&req, body, mappedModel)
 	if err != nil {
 		writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
 			"translation: "+err.Error())
 		return
 	}
+	s.recordStopCap(&req, stopCapped)
 
-	httpReq, err := s.adapter.BuildRequest(r.Context(), openaiBody)
+	httpReq, err := s.adapter.BuildRequest(adapter.WithInboundHeaders(r.Context(), r.Header), openaiBody)
 	if err != nil {
 		writeError(w, s.log, http.StatusInternalServerError, errAPI,
 			"build upstream request: "+err.Error())
@@ -234,7 +239,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	anthropicResp, usage, err := t.FromUpstream(normalised, req.Model)
+	respBody, usage, err := t.FromUpstream(normalised, req.Model)
 	if err != nil {
 		writeError(w, s.log, upstreamErrStatus(err), errAPI, err.Error())
 		return
@@ -250,9 +255,9 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	)
 
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(anthropicResp); err != nil {
+	if _, err := w.Write(respBody); err != nil {
 		// Headers already committed; can't change status. Log for visibility.
-		s.log.Error("response encode failed", slog.String("path", "/v1/messages"), slog.String("error", err.Error()))
+		s.log.Error("response write failed", slog.String("path", "/v1/messages"), slog.String("error", err.Error()))
 	}
 }
 

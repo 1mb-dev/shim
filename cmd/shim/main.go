@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/1mb-dev/shim/internal/adapter"
+	"github.com/1mb-dev/shim/internal/adapter/anthropic"
 	"github.com/1mb-dev/shim/internal/adapter/deepseek"
 	"github.com/1mb-dev/shim/internal/config"
 	"github.com/1mb-dev/shim/internal/launcher"
@@ -65,18 +66,9 @@ func runServer() error {
 	}
 
 	log := setupLogger(cfg)
-	a, err := deepseek.New(deepseek.ConfigureOpts{
-		BaseURL:       cfg.UpstreamBaseURL,
-		APIKey:        cfg.UpstreamAPIKey,
-		ModelOverride: cfg.UpstreamModel,
-		OpusModel:     cfg.UpstreamOpusModel,
-		SonnetModel:   cfg.UpstreamSonnetModel,
-		HaikuModel:    cfg.UpstreamHaikuModel,
-	})
-	if err != nil {
-		return fmt.Errorf("deepseek adapter: %w", err)
+	if err := registerAdapter(cfg, log); err != nil {
+		return err
 	}
-	adapter.Register(a)
 
 	srv, err := server.New(cfg, log)
 	if err != nil {
@@ -101,6 +93,39 @@ func runServer() error {
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+// registerAdapter constructs and registers the adapter selected by ADAPTER.
+// Unknown values fail loudly rather than falling back silently (thesis-2).
+func registerAdapter(cfg *config.Config, log *slog.Logger) error {
+	switch cfg.Adapter {
+	case deepseek.Name:
+		a, err := deepseek.New(deepseek.ConfigureOpts{
+			BaseURL:       cfg.UpstreamBaseURL,
+			APIKey:        cfg.UpstreamAPIKey,
+			ModelOverride: cfg.UpstreamModel,
+			OpusModel:     cfg.UpstreamOpusModel,
+			SonnetModel:   cfg.UpstreamSonnetModel,
+			HaikuModel:    cfg.UpstreamHaikuModel,
+		})
+		if err != nil {
+			return fmt.Errorf("deepseek adapter: %w", err)
+		}
+		adapter.Register(a)
+	case anthropic.Name:
+		a, err := anthropic.New(anthropic.ConfigureOpts{
+			BaseURL: cfg.UpstreamBaseURL,
+			APIKey:  cfg.UpstreamAPIKey,
+			Logger:  log,
+		})
+		if err != nil {
+			return fmt.Errorf("anthropic adapter: %w", err)
+		}
+		adapter.Register(a)
+	default:
+		return fmt.Errorf("unknown ADAPTER %q (valid: %q, %q)", cfg.Adapter, deepseek.Name, anthropic.Name)
+	}
+	return nil
 }
 
 func loadConfig() (*config.Config, error) {
