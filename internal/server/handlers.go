@@ -348,6 +348,43 @@ func (s *Server) handleCountTokens(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleExplain — POST /v1/messages/explain. Dry-run: returns the upstream
+// request shim WOULD send for this body + every mutation it would apply, WITHOUT
+// calling the upstream (no BuildRequest, no client.Do). The tangible demo of
+// thesis-2.
+//
+// Does NOT self-record: explain answers "what WOULD happen?" — a diagnostic, not
+// the data-plane "what DID happen?" the measurements characterise (same reasoning
+// as the probe/observability endpoints above). It is distinct from count_tokens,
+// which IS a real Anthropic API call clients make in the live flow and so records.
+func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
+	body, err := s.readBody(r, w)
+	if err != nil {
+		return // readBody already wrote the response.
+	}
+
+	var req translate.AnthropicRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
+			"malformed JSON body: "+err.Error())
+		return
+	}
+
+	mappedModel := s.adapter.MapModel(req.Model)
+	upstreamBody, stopCapped, err := s.adapter.Translator().ToUpstream(&req, body, mappedModel)
+	if err != nil {
+		writeError(w, s.log, http.StatusBadRequest, errInvalidRequest,
+			"translation: "+err.Error())
+		return
+	}
+
+	exp := buildExplain(s.adapter.Name(), &req, body, upstreamBody, mappedModel, stopCapped)
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(exp); err != nil {
+		s.log.Error("response encode failed", slog.String("path", "/v1/messages/explain"), slog.String("error", err.Error()))
+	}
+}
+
 // readBody reads and caps the request body, converting MaxBytesReader
 // errors into Anthropic-shaped 413s. On error it has already written the
 // response; callers should return.

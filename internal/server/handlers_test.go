@@ -339,10 +339,13 @@ func TestProbeEndpointsDoNotSelfRecord(t *testing.T) {
 	defer s.close()
 	srv, _ := newTestServer(t, s)
 
-	probes := []string{"/health", "/healthz", "/readyz", "/metrics", "/v1/metrics"}
-	for _, p := range probes {
+	getProbes := []string{"/health", "/healthz", "/readyz", "/metrics", "/v1/metrics"}
+	for _, p := range getProbes {
 		doGET(t, srv, p).Body.Close()
 	}
+	// /explain is a POST diagnostic ("what WOULD happen?") — same non-data-plane
+	// bucket, must also stay out of the measurements.
+	doPOST(t, srv, "/v1/messages/explain", `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`).Body.Close()
 	// One real client call — the only thing that should be recorded.
 	doPOST(t, srv, "/v1/messages", `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`).Body.Close()
 
@@ -353,9 +356,9 @@ func TestProbeEndpointsDoNotSelfRecord(t *testing.T) {
 	if _, ok := snap.RequestsSeen["/v1/messages"]; !ok {
 		t.Error("requests_seen missing /v1/messages — client traffic must record")
 	}
-	for _, p := range probes {
+	for _, p := range append(getProbes, "/v1/messages/explain") {
 		if n, ok := snap.RequestsSeen[p]; ok {
-			t.Errorf("probe endpoint %s self-recorded (requests_seen=%d); must not pollute traffic metrics", p, n)
+			t.Errorf("non-data-plane endpoint %s self-recorded (requests_seen=%d); must not pollute traffic metrics", p, n)
 		}
 	}
 }

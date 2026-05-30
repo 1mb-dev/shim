@@ -753,6 +753,37 @@ func TestE2E_PrometheusMetrics(t *testing.T) {
 	})
 }
 
+// ---- dry-run / explain (v0.4 P3) ----
+
+func TestE2E_Explain(t *testing.T) {
+	withBudget(t, perCaseBudget, func() {
+		h := Start(t)
+
+		status, body := postJSON(t, h.URL+"/v1/messages/explain", map[string]any{
+			"model":      "claude-opus-4-7",
+			"max_tokens": 10,
+			"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+		})
+		if status != 200 {
+			t.Fatalf("status=%d body=%s", status, body)
+		}
+		text := string(body)
+		for _, want := range []string{
+			`"transport":"translated"`,
+			`"type":"model_rewrite"`,
+			`"to":"deepseek-v4-pro"`, // claude-opus-4-7 → deepseek opus default
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("explain missing %q\n%s", want, text)
+			}
+		}
+		// The whole point: explain does NOT call the upstream.
+		if got := h.Upstream.Received(); len(got) != 0 {
+			t.Errorf("explain must not call upstream; fake saw %d request(s)", len(got))
+		}
+	})
+}
+
 func mustContainInOrder(t *testing.T, haystack string, needles ...string) {
 	t.Helper()
 	idx := 0
