@@ -57,8 +57,10 @@ No proxy needed.
 
 - `POST /v1/messages` — Anthropic Messages API. Non-streaming AND streaming (`{"stream": true}` returns the canonical Anthropic SSE event sequence: `message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` → `message_delta` → `message_stop`).
 - `POST /v1/messages/count_tokens` — cl100k_base BPE count (see [Measurement](#measurement)).
-- `GET /v1/metrics` — per-endpoint latency p50/p95/p99, shim-vs-upstream token-delta totals, rewrite-event counts. See [Measurement](#measurement).
-- `GET /health` — `{"status":"ok"}`.
+- `POST /v1/messages/explain` — dry-run: returns the upstream request shim *would* send + every mutation it would apply (model rewrite, stop-sequence cap), **without calling the upstream**. The tangible "loud-fail on drift" view; reuses the real translation path. See [Measurement](#measurement).
+- `GET /v1/metrics` — JSON snapshot: per-endpoint latency p50/p95/p99, shim-vs-upstream token-delta totals, rewrite-event counts. See [Measurement](#measurement).
+- `GET /metrics` — the same signals in Prometheus text-exposition format (scrapeable). See [Measurement](#measurement).
+- `GET /health` (and the alias `/healthz`) — `{"status":"ok"}` (liveness); `GET /readyz` — `{"status":"ready"}` (readiness).
 - Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences` (capped at 4 per OpenAI's limit; over-cap requests are truncated and a `warn` log line emitted), `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
 - Thinking control plane + reasoning_content roundtrip (Stage 2.6c): `thinking: {type, ...}` request field is passed through identity to DeepSeek. When upstream emits `reasoning_content` on a response, shim translates it to an Anthropic thinking block (`{type: "thinking", thinking: ..., signature: "shim-passthrough-v1"}`); when clients echo thinking blocks back on continuations, shim translates them back to `reasoning_content` on the outbound request. Block ordering: thinking precedes tool_use in assistant turns per Anthropic spec. Multiple thinking blocks concatenate (newline-separated) into one reasoning_content string. The signature is a constant — shim does not verify on roundtrip; see "Errors and debugging" for the design rationale.
 - Two adapters: **DeepSeek** (`https://api.deepseek.com/v1`, OpenAI-compatible — translates) and **anthropic-passthrough** (`https://api.anthropic.com`, native Anthropic Messages — forwards verbatim). Select via `ADAPTER`. See [Transparent passthrough](#transparent-passthrough).
@@ -241,9 +243,6 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
 ```json
 {
     "latency": {
-        "/health": {
-            "p50": 0.002517, "p95": 0.003018, "p99": 0.003067, "n": 5
-        },
         "/v1/messages": {
             "p50": 0.316637, "p95": 0.980266, "p99": 1.585670, "n": 14
         },
@@ -264,10 +263,8 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
         "stop_sequences": 2
     },
     "requests_seen": {
-        "/health": 5,
         "/v1/messages": 14,
-        "/v1/messages/count_tokens": 3,
-        "/v1/metrics": 1
+        "/v1/messages/count_tokens": 3
     },
     "upstream_errors": {
         "/v1/messages": {
@@ -302,7 +299,11 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
 - `requests_seen.<path>` counts every handler entry — the denominator for
   any ratio operators want to compute (errors per request, rewrites per
   request, etc.). Increments before parsing or validation; counts all
-  attempts, not just successes.
+  attempts, not just successes. Only the client API endpoints
+  (`/v1/messages`, `/v1/messages/count_tokens`) record: the probe/observability
+  endpoints (`/health`, `/healthz`, `/readyz`, `/metrics`, `/v1/metrics`) and
+  the `/v1/messages/explain` dry-run are deliberately excluded so liveness
+  probes and metric scrapes don't pollute the signal.
 - `upstream_errors.<path>` counts non-2xx responses from the configured
   upstream. `total` is all of them; `class_4xx` + `class_5xx` bucket by
   HTTP class (3xx and oddities contribute to `total` and `by_status` only).
@@ -314,6 +315,38 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
 `/health`). State is in-memory only and resets on restart. The JSON shape
 is committed for Stage 1 but unstable until v0.1.0; breaking changes will
 land in `CHANGELOG.md`.
+
+### Prometheus
+
+`GET /metrics` exposes the same aggregates in Prometheus text-exposition
+format (v0.0.4), so shim can sit *in front of* Grafana/Prometheus rather than
+replace them. Hand-rolled — no `client_golang` dependency, so the binary stays
+a single static file.
+
+```text
+# HELP shim_rewrites_total Inbound-traffic mutations shim applied, by kind ...
+# TYPE shim_rewrites_total counter
+shim_rewrites_total{kind="model"} 14
+shim_upstream_errors_total{endpoint="/v1/messages",status="400"} 1
+shim_latency_seconds{endpoint="/v1/messages",quantile="0.95"} 0.980266
+```
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `shim_requests_seen_total` | counter | `endpoint` | client requests seen |
+| `shim_rewrites_total` | counter | `kind` | inbound mutations (`model`, `stop_sequences`) |
+| `shim_upstream_errors_total` | counter | `endpoint`, `status` | upstream non-2xx |
+| `shim_tokens_shim_total` | counter | `endpoint` | shim's cl100k prompt-token count |
+| `shim_tokens_upstream_prompt_total` | counter | `endpoint` | upstream-reported prompt tokens |
+| `shim_tokens_upstream_completion_total` | counter | `endpoint` | upstream-reported completion tokens |
+| `shim_token_observations_total` | counter | `endpoint` | responses with usage recorded |
+| `shim_latency_seconds` | gauge | `endpoint`, `quantile` | latency percentile (reservoir estimate, seconds) |
+| `shim_latency_observations_total` | counter | `endpoint` | latency observations |
+
+Latency is a **gauge** with a `quantile` label, not a summary: the reservoir
+yields point-in-time percentiles, not histogram buckets — a gauge is the honest
+representation of what shim has. Units are seconds (Prometheus base-unit
+convention); the JSON `/v1/metrics` above reports milliseconds.
 
 ### Token counting
 

@@ -3,6 +3,21 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] — Honest measurement made real + installable (2026-05-30)
+
+Makes the honest-measurement thesis machine-consumable and the binary actually
+installable. No new adapters (a 3rd is a fast-follow) — adapters are fixtures,
+honesty is the product.
+
+### Added
+- `GET /metrics` — Prometheus text exposition (v0.0.4) of the same aggregates as the JSON `/v1/metrics`: `shim_requests_seen_total`, `shim_rewrites_total`, `shim_upstream_errors_total`, `shim_tokens_*`, and `shim_latency_seconds` (a gauge with a `quantile` label — reservoir percentiles, not a histogram; seconds). Hand-rolled, zero new dependencies (stays a single static binary).
+- `GET /healthz` (alias of `/health`) + `GET /readyz` — conventional liveness/readiness probe paths.
+- `POST /v1/messages/explain` — dry-run returning the upstream request shim *would* send + every mutation it would apply (model rewrite, stop-sequence cap), **without calling the upstream**. `transport` (passthrough|translated) is byte-derived, so it reflects what would actually hit the wire.
+- Release pipeline: `.goreleaser.yaml` (per-arch archives + a `FROM scratch` multi-arch image — binary + CA certs, nonroot — to GHCR + a Homebrew cask to `1mb-dev/tap`) and `.github/workflows/release.yml` (a validate job runs test/lint/snapshot on every push/PR; the publish job is double-gated on a `v*` tag **and** `vars.PUBLISH_ENABLED` — inert until the public flip).
+
+### Changed
+- Measurement records **only client API traffic** (`/v1/messages`, `/v1/messages/count_tokens`). Probe/observability endpoints (`/health`, `/healthz`, `/readyz`, `/metrics`, `/v1/metrics`) and the `/explain` dry-run no longer self-record, so liveness probes and metric scrapes can't dominate `requests_seen` or pollute the latency reservoirs. **Shape change:** those paths no longer appear in `/v1/metrics` `requests_seen`/`latency`.
+
 ## [0.3.1] — Passthrough error transparency + e2e (2026-05-30)
 
 Completes the passthrough's transparency story on the error path and proves the
