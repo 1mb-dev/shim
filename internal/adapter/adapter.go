@@ -16,6 +16,7 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 
@@ -82,6 +83,28 @@ type Adapter interface {
 // headers an adapter may read; it never forwards inbound Authorization
 // (shim authenticates upstream itself).
 type inboundHeadersKey struct{}
+
+// ReadNormalizedResponse is the shared body of NormalizeResponse for adapters
+// whose upstream needs no envelope unwrapping (deepseek, anthropic-passthrough):
+// it returns the body unchanged on 2xx and, on non-2xx, returns the body
+// alongside an error carrying the status (the server routes that to
+// writeUpstreamError). It ALWAYS closes resp.Body — the NormalizeResponse
+// contract delegates the close here. name prefixes errors so they stay
+// attributable to the calling adapter.
+func ReadNormalizedResponse(name string, resp *http.Response) ([]byte, error) {
+	if resp == nil {
+		return nil, fmt.Errorf("%s: nil response", name)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: read body: %w", name, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return body, fmt.Errorf("%s: upstream status %d", name, resp.StatusCode)
+	}
+	return body, nil
+}
 
 // WithInboundHeaders returns ctx carrying the client's request headers.
 func WithInboundHeaders(ctx context.Context, h http.Header) context.Context {

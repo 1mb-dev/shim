@@ -13,7 +13,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -115,23 +114,12 @@ func (a *impl) BuildRequest(ctx context.Context, body []byte) (*http.Request, er
 	return req, nil
 }
 
-// NormalizeResponse reads the buffered (non-streaming) upstream body and
-// returns it unchanged on 2xx; non-2xx propagates the body so the server can
-// build a useful error. It closes resp.Body (the server delegates close to
-// this method on the non-stream path).
+// NormalizeResponse returns the buffered (non-streaming) upstream body unchanged
+// on 2xx and errors on non-2xx (passthrough does no envelope unwrapping). The
+// shared body lives in adapter.ReadNormalizedResponse, which also closes resp.Body
+// (the server delegates the close to this method on the non-stream path).
 func (a *impl) NormalizeResponse(resp *http.Response) ([]byte, error) {
-	if resp == nil {
-		return nil, fmt.Errorf("anthropic: nil response")
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: read body: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return body, fmt.Errorf("anthropic: upstream status %d", resp.StatusCode)
-	}
-	return body, nil
+	return adapter.ReadNormalizedResponse(Name, resp)
 }
 
 // Translator returns the identity translator: native Anthropic upstream, no

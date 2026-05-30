@@ -16,7 +16,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 
@@ -171,22 +170,11 @@ func (a *impl) BuildRequest(ctx context.Context, body []byte) (*http.Request, er
 	return req, nil
 }
 
-// NormalizeResponse reads the upstream body and returns it unchanged when
-// the status is 2xx. Non-2xx responses propagate the body so callers can
-// build a useful error; the second return value carries the status hint.
+// NormalizeResponse returns the upstream body unchanged on 2xx (DeepSeek hugs
+// the OpenAI contract, so no envelope unwrapping) and errors on non-2xx. The
+// shared body lives in adapter.ReadNormalizedResponse, which also closes resp.Body.
 func (a *impl) NormalizeResponse(resp *http.Response) ([]byte, error) {
-	if resp == nil {
-		return nil, fmt.Errorf("deepseek: nil response")
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("deepseek: read body: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return body, fmt.Errorf("deepseek: upstream status %d", resp.StatusCode)
-	}
-	return body, nil
+	return adapter.ReadNormalizedResponse(Name, resp)
 }
 
 // Translator returns the OpenAI-ChatCompletions dialect translator. DeepSeek
