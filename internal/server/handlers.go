@@ -77,23 +77,35 @@ func (s *Server) recordStopCap(req *translate.AnthropicRequest, dropped int) {
 // "Errors and debugging" for the upstream-echo disclosure.
 const upstreamBodyLogBytes = 1024
 
-// handleHealth — GET /health → {"status":"ok"}.
+// The probe + observability endpoints below — handleHealth (GET /health,
+// /healthz), handleReady (GET /readyz), handleMetrics (GET /v1/metrics), and
+// handleMetricsPrometheus (GET /metrics) — deliberately do NOT self-record into
+// the measurements. Liveness/readiness probes and metric scrapes are
+// infrastructure traffic, not the client API traffic the measurements exist to
+// characterise; recording them lets monitoring dominate requests_seen and
+// pollutes the latency reservoirs. Only the client endpoints (/v1/messages,
+// .../count_tokens) self-record. No auth on any of these — loopback-only trust
+// model (see README "Measurement").
+
+// handleHealth — GET /health (and the conventional alias /healthz) → 200
+// {"status":"ok"} (liveness).
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	start := time.Now()
-	s.measure.RecordRequestSeen("/health")
-	defer func() { s.measure.RecordLatency("/health", time.Since(start)) }()
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
-// handleMetrics — GET /v1/metrics → measure.Snapshot as JSON. No auth;
-// matches /health's loopback-only trust model. The README's "Measurement"
-// section documents the wire shape and the no-auth implication.
-func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
-	start := time.Now()
-	s.measure.RecordRequestSeen("/v1/metrics")
-	defer func() { s.measure.RecordLatency("/v1/metrics", time.Since(start)) }()
+// handleReady — GET /readyz → 200 {"status":"ready"} (readiness). Readiness is
+// gated at startup (tokens.Init + adapter.Validate must pass before the listener
+// binds), so once shim is serving it is ready — this is a conventional probe
+// path (k8s/Docker), not a deep async readiness check.
+func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"ready"}`))
+}
 
+// handleMetrics — GET /v1/metrics → measure.Snapshot as JSON. The README's
+// "Measurement" section documents the wire shape.
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	snap := s.measure.Snapshot()
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(snap); err != nil {
@@ -105,15 +117,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleMetricsPrometheus — GET /metrics → measure.Snapshot in Prometheus text
-// exposition format (the scrapeable sibling of /v1/metrics' human JSON). No auth:
-// matches /health + /v1/metrics' loopback-only trust model.
-//
-// Deliberately does NOT self-record: /metrics is a scrape target hit every ~15s,
-// so recording it would let monitoring traffic dominate requests_seen and turn
-// its own latency reservoir into a measure of string-building time, polluting
-// the very signal it reports. (The pre-existing /health + /v1/metrics handlers
-// DO self-record — same issue, deferred to P2 to avoid changing pre-existing
-// behaviour + tests inside this endpoint's commit.)
+// exposition format (the scrapeable sibling of /v1/metrics' human JSON). Does
+// not self-record — see the probe/observability note above.
 func (s *Server) handleMetricsPrometheus(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	if _, err := w.Write(renderPrometheus(s.measure.Snapshot())); err != nil {

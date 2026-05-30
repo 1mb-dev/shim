@@ -313,13 +313,50 @@ func TestHealth(t *testing.T) {
 	defer s.close()
 	srv, _ := newTestServer(t, s)
 
-	resp := doGET(t, srv, "/health")
-	body := bodyOf(t, resp)
-	if resp.StatusCode != 200 {
-		t.Errorf("status = %d", resp.StatusCode)
+	// /health + its conventional alias /healthz → liveness; /readyz → readiness.
+	for _, c := range []struct{ path, want string }{
+		{"/health", `"status":"ok"`},
+		{"/healthz", `"status":"ok"`},
+		{"/readyz", `"status":"ready"`},
+	} {
+		resp := doGET(t, srv, c.path)
+		body := bodyOf(t, resp)
+		if resp.StatusCode != 200 {
+			t.Errorf("%s status = %d, want 200", c.path, resp.StatusCode)
+		}
+		if !strings.Contains(body, c.want) {
+			t.Errorf("%s body = %s, want %s", c.path, body, c.want)
+		}
 	}
-	if !strings.Contains(body, `"status":"ok"`) {
-		t.Errorf("body = %s", body)
+}
+
+// TestProbeEndpointsDoNotSelfRecord pins the v0.4 principle: probe +
+// observability endpoints stay OUT of the measurements; only real client API
+// traffic (/v1/messages, .../count_tokens) self-records. Without this fence, a
+// scraper or k8s probe would dominate requests_seen and pollute latency.
+func TestProbeEndpointsDoNotSelfRecord(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, _ := newTestServer(t, s)
+
+	probes := []string{"/health", "/healthz", "/readyz", "/metrics", "/v1/metrics"}
+	for _, p := range probes {
+		doGET(t, srv, p).Body.Close()
+	}
+	// One real client call — the only thing that should be recorded.
+	doPOST(t, srv, "/v1/messages", `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`).Body.Close()
+
+	var snap measure.Snapshot
+	if err := json.Unmarshal([]byte(bodyOf(t, doGET(t, srv, "/v1/metrics"))), &snap); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := snap.RequestsSeen["/v1/messages"]; !ok {
+		t.Error("requests_seen missing /v1/messages — client traffic must record")
+	}
+	for _, p := range probes {
+		if n, ok := snap.RequestsSeen[p]; ok {
+			t.Errorf("probe endpoint %s self-recorded (requests_seen=%d); must not pollute traffic metrics", p, n)
+		}
 	}
 }
 

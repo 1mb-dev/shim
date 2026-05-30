@@ -148,9 +148,9 @@ func TestE2E_HappyNonStream(t *testing.T) {
 		if d := after.Rewrites["model"] - before.Rewrites["model"]; d != 1 {
 			t.Errorf("rewrites.model delta = %d, want 1 (claude-sonnet-4-6 → deepseek-v4-flash)", d)
 		}
-		// Stage 2.5b: requests_seen denominator. handleMessages + the
-		// implicit /v1/metrics call h.Metrics makes both increment;
-		// assert the /v1/messages delta in isolation.
+		// requests_seen denominator. Only /v1/messages records (v0.4: the
+		// implicit /v1/metrics scrape from h.Metrics no longer self-records);
+		// assert the /v1/messages delta.
 		if d := after.RequestsSeen["/v1/messages"] - before.RequestsSeen["/v1/messages"]; d != 1 {
 			t.Errorf("requests_seen[/v1/messages] delta = %d, want 1", d)
 		}

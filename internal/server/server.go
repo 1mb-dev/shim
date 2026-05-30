@@ -63,6 +63,8 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	mux.HandleFunc("GET /v1/metrics", s.handleMetrics)
 	mux.HandleFunc("GET /metrics", s.handleMetricsPrometheus)
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReady)
 
 	s.http = &http.Server{
 		Addr:              cfg.BindAddr + ":" + strconv.Itoa(cfg.Port),
