@@ -298,17 +298,22 @@ func TestE2E_Upstream400Becomes502(t *testing.T) {
 		if errResp.Type != "error" || errResp.Error.Type != "api_error" {
 			t.Errorf("error envelope wrong: %+v", errResp)
 		}
-		if !strings.Contains(errResp.Error.Message, "upstream status 400") {
+		if !strings.Contains(errResp.Error.Message, "status 400") {
 			t.Errorf("error message should cite upstream 400, got: %q", errResp.Error.Message)
 		}
 
-		// Assertion C: stderr log line carries status=502 + the 400 detail.
+		// Assertion C: the upstream-error path emits a SINGLE diagnostic line
+		// (v0.3.1 — the dialect renders the client error via FromUpstreamError;
+		// the server no longer double-logs a separate "request failed" line).
+		// That line carries the client-facing status alongside the upstream
+		// status (asserted structurally in C2). The "upstream status 400"
+		// client-message detail is verified in the response body at B.
 		stderr := h.Stderr()
 		if !strings.Contains(stderr, `"status":502`) {
-			t.Errorf("stderr missing status=502")
+			t.Errorf("stderr missing client status=502 on the upstream-error line")
 		}
-		if !strings.Contains(stderr, `upstream status 400`) {
-			t.Errorf("stderr missing 'upstream status 400' detail")
+		if strings.Contains(stderr, `"msg":"request failed"`) {
+			t.Errorf("upstream-error path should not emit a separate request-failed line")
 		}
 
 		// Assertion C2: Stage 2.6 — the new `upstream error` log line MUST

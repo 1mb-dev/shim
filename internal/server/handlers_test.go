@@ -31,7 +31,8 @@ type stub struct {
 	upstreamHandler http.HandlerFunc
 	upstream        *httptest.Server
 	missingKey      bool
-	buildErr        error // when non-nil, BuildRequest returns this without dialling upstream
+	buildErr        error                // when non-nil, BuildRequest returns this without dialling upstream
+	translator      translate.Translator // when nil, defaults to AnthropicOpenAI()
 }
 
 var stubCounter int
@@ -86,7 +87,12 @@ func (s *stub) NormalizeResponse(r *http.Response) ([]byte, error) {
 	return body, nil
 }
 
-func (s *stub) Translator() translate.Translator { return translate.AnthropicOpenAI() }
+func (s *stub) Translator() translate.Translator {
+	if s.translator != nil {
+		return s.translator
+	}
+	return translate.AnthropicOpenAI()
+}
 
 // TestMessages_ForwardsUpstreamHeaders: allowlisted upstream response headers
 // reach the client on success; non-allowlisted ones don't.
@@ -135,6 +141,37 @@ func TestMessages_ForwardsHeadersOnUpstreamError(t *testing.T) {
 	defer resp.Body.Close()
 	if got := resp.Header.Get("Retry-After"); got != "30" {
 		t.Errorf("Retry-After not forwarded on upstream error: %q", got)
+	}
+}
+
+// TestMessages_PassthroughErrorVerbatim: with an identity-dialect adapter, a
+// non-2xx upstream is forwarded to the client verbatim — status and body
+// unchanged (the error-path analog of response passthrough; a non-standard 529
+// would be re-mapped to 502 by the OpenAI dialect). The translate unit test
+// covers the pure FromUpstreamError; this covers the server wiring through
+// writeUpstreamError.
+func TestMessages_PassthroughErrorVerbatim(t *testing.T) {
+	const upstreamBody = `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded, please retry"}}`
+	s := newStub()
+	defer s.close()
+	s.translator = translate.Identity()
+	s.mu.Lock()
+	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(529)
+		_, _ = w.Write([]byte(upstreamBody))
+	}
+	s.mu.Unlock()
+	srv, _ := newTestServer(t, s)
+
+	resp := doPOST(t, srv, "/v1/messages", `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)
+	defer resp.Body.Close()
+	respBody := bodyOf(t, resp)
+	if resp.StatusCode != 529 {
+		t.Errorf("status = %d, want 529 (verbatim upstream status, not re-mapped)", resp.StatusCode)
+	}
+	if respBody != upstreamBody {
+		t.Errorf("body not verbatim:\n got: %s\nwant: %s", respBody, upstreamBody)
 	}
 }
 
@@ -954,7 +991,7 @@ func TestMessages_UpstreamBadRequest_400(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502 (default branch)", resp.StatusCode)
 	}
-	if !strings.Contains(respBody, "upstream error") {
+	if !strings.Contains(respBody, "status 400") {
 		t.Errorf("body should surface default-branch message: %s", respBody)
 	}
 	if strings.Contains(respBody, upstreamErrPhrase) {

@@ -260,7 +260,16 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// Forward rate-limit/tracing headers on errors too — a 429's
 		// Retry-After / anthropic-ratelimit-* is exactly when a client needs them.
 		copyForwardedHeaders(w.Header(), upstream.Header)
-		s.writeUpstreamError(w, "/v1/messages", mappedModel, upstream.StatusCode, normalised, err)
+		// A 2xx that NormalizeResponse still rejected is a body/transport read
+		// failure, not an upstream error response — always a gateway failure,
+		// dialect-independent (FromUpstreamError keys on status and would
+		// mis-render a 2xx, e.g. identity would forward 200 + an empty body).
+		if upstream.StatusCode >= 200 && upstream.StatusCode < 300 {
+			writeError(w, s.log, http.StatusBadGateway, errAPI,
+				"read upstream response: "+err.Error())
+			return
+		}
+		s.writeUpstreamError(w, "/v1/messages", mappedModel, upstream.StatusCode, normalised)
 		return
 	}
 
@@ -339,20 +348,23 @@ func (s *Server) readBody(r *http.Request, w http.ResponseWriter) ([]byte, error
 	return body, nil
 }
 
-// writeUpstreamError translates a non-2xx upstream response into the right
-// Anthropic-shaped error class. The upstream body is NOT echoed to the
-// client (it can contain prompt content or other sensitive material), but
-// it IS logged as `body_preview` on the `upstream_error` line for operator
-// diagnosis — thesis-1: the proxy's reason to exist is honest boundary
-// visibility. See README "Errors and debugging" for the upstream-echo
-// disclosure. endpoint is the shim-side endpoint that initiated the
-// upstream call (e.g. "/v1/messages") — used to bucket the error in
-// /v1/metrics' upstream_errors aggregate. resolvedModel is the upstream
-// model name after Adapter.MapModel; carried on the log line so a failure
-// is joinable to the prior "model rewritten" breadcrumb without timestamp
-// triangulation.
-func (s *Server) writeUpstreamError(w http.ResponseWriter, endpoint, resolvedModel string, upstreamStatus int, body []byte, err error) {
+// writeUpstreamError renders a non-2xx upstream response for the client via the
+// adapter's Translator (FromUpstreamError) — the dialect owns whether the status
+// and body pass through verbatim (identity: native Anthropic, already correct)
+// or are re-classified into a fresh Anthropic envelope (OpenAI dialect: the
+// upstream body is OpenAI-shaped, may carry prompt content, and is dropped).
+//
+// The server owns the surrounding concerns. It records the upstream error for
+// /v1/metrics and logs a single diagnostic `upstream error` line carrying both
+// the upstream status and the client-facing status plus a capped body_preview —
+// operator-facing only, never echoed to the client (thesis-1: honest boundary
+// visibility; see README "Errors and debugging"). endpoint buckets the metric;
+// resolvedModel (upstream name after Adapter.MapModel) joins the line to the
+// prior "model rewritten" breadcrumb without timestamp triangulation.
+func (s *Server) writeUpstreamError(w http.ResponseWriter, endpoint, resolvedModel string, upstreamStatus int, body []byte) {
 	s.measure.RecordUpstreamError(endpoint, upstreamStatus)
+
+	clientStatus, clientBody := s.adapter.Translator().FromUpstreamError(upstreamStatus, body)
 
 	preview := body
 	if len(preview) > upstreamBodyLogBytes {
@@ -373,22 +385,17 @@ func (s *Server) writeUpstreamError(w http.ResponseWriter, endpoint, resolvedMod
 		slog.String("endpoint", endpoint),
 		slog.String("adapter", s.adapter.Name()),
 		slog.Int("upstream_status", upstreamStatus),
+		slog.Int("status", clientStatus),
 		slog.String("resolved_model", resolvedModel),
 		slog.String("body_preview", string(preview)),
 	)
 
-	switch {
-	case upstreamStatus == http.StatusUnauthorized || upstreamStatus == http.StatusForbidden:
-		writeError(w, s.log, http.StatusUnauthorized, errAuthentication,
-			fmt.Sprintf("upstream rejected the API key (status %d)", upstreamStatus))
-	case upstreamStatus == http.StatusTooManyRequests:
-		writeError(w, s.log, http.StatusTooManyRequests, errRateLimit,
-			"upstream rate limited")
-	case upstreamStatus >= 500:
-		writeError(w, s.log, http.StatusBadGateway, errAPI,
-			fmt.Sprintf("upstream unavailable (status %d)", upstreamStatus))
-	default:
-		writeError(w, s.log, http.StatusBadGateway, errAPI,
-			"upstream error: "+err.Error())
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(clientStatus)
+	if _, err := w.Write(clientBody); err != nil {
+		s.log.Error("error-response write failed",
+			slog.String("endpoint", endpoint),
+			slog.String("error", err.Error()),
+		)
 	}
 }

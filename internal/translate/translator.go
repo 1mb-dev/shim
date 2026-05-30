@@ -54,6 +54,18 @@ type Translator interface {
 	// implementation owns reading resp.Body; the caller has already gated on a
 	// 2xx upstream status.
 	StreamChunks(resp *http.Response, originalModel string) (next func() ([]byte, bool, error), usage *AnthropicUsage, err error)
+
+	// FromUpstreamError renders a NON-2xx upstream response for the client,
+	// returning the client-facing status and body. It is the error-path analog
+	// of FromUpstream: the dialect — not the handler — owns how an upstream
+	// failure surfaces. The OpenAI dialect re-classifies the status and emits a
+	// fresh Anthropic-shaped error envelope (the OpenAI body is OpenAI-shaped,
+	// may carry prompt content, and must not leak to an Anthropic client);
+	// identity forwards the upstream status + body verbatim (the upstream IS
+	// native Anthropic — its error is already correctly shaped, so re-wrapping
+	// would only lose fidelity). The server owns logging, measurement, and the
+	// write; this method owns only the dialect render.
+	FromUpstreamError(upstreamStatus int, upstreamBody []byte) (clientStatus int, clientBody []byte)
 }
 
 // AnthropicOpenAI returns the Translator for OpenAI-ChatCompletions-dialect
@@ -140,6 +152,28 @@ func (anthropicOpenAI) StreamChunks(resp *http.Response, originalModel string) (
 	return next, &usage, nil
 }
 
+// FromUpstreamError re-classifies an OpenAI-dialect upstream failure into the
+// Anthropic status + envelope a client expects. The upstream body is dropped
+// (it is OpenAI-shaped and may carry prompt content); the message is derived
+// from the status so nothing from the upstream leaks. Mirrors the prior
+// server-side switch, now owned by the dialect.
+func (anthropicOpenAI) FromUpstreamError(upstreamStatus int, _ []byte) (int, []byte) {
+	switch {
+	case upstreamStatus == http.StatusUnauthorized || upstreamStatus == http.StatusForbidden:
+		return http.StatusUnauthorized, AnthropicErrorJSON(ErrTypeAuthentication,
+			fmt.Sprintf("upstream rejected the API key (status %d)", upstreamStatus))
+	case upstreamStatus == http.StatusTooManyRequests:
+		return http.StatusTooManyRequests, AnthropicErrorJSON(ErrTypeRateLimit,
+			"upstream rate limited")
+	case upstreamStatus >= 500:
+		return http.StatusBadGateway, AnthropicErrorJSON(ErrTypeAPI,
+			fmt.Sprintf("upstream unavailable (status %d)", upstreamStatus))
+	default:
+		return http.StatusBadGateway, AnthropicErrorJSON(ErrTypeAPI,
+			fmt.Sprintf("upstream returned status %d", upstreamStatus))
+	}
+}
+
 // Identity returns the passthrough Translator for a native-Anthropic upstream:
 // the request is forwarded verbatim and the response body is returned
 // unchanged, with no dialect conversion. Used by the anthropic-passthrough
@@ -168,6 +202,13 @@ func (identity) FromUpstream(body []byte, _ string) ([]byte, AnthropicUsage, err
 		return nil, AnthropicUsage{}, fmt.Errorf("%w: %w", ErrUpstreamMalformed, err)
 	}
 	return body, probe.Usage, nil
+}
+
+// FromUpstreamError forwards the native-Anthropic upstream's error verbatim —
+// the status and body are already correctly shaped, so re-wrapping would only
+// lose fidelity. The error-path analog of identity.FromUpstream.
+func (identity) FromUpstreamError(upstreamStatus int, upstreamBody []byte) (int, []byte) {
+	return upstreamStatus, upstreamBody
 }
 
 func decodeOpenAIResponse(body []byte) (*OpenAIResponse, error) {

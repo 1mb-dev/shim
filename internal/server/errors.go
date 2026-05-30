@@ -1,46 +1,30 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+
+	"github.com/1mb-dev/shim/internal/translate"
 )
 
-// anthropicError mirrors the documented Anthropic error shape:
-//
-//	{"type":"error","error":{"type":"invalid_request_error","message":"..."}}
-type anthropicError struct {
-	Type  string             `json:"type"`
-	Error anthropicErrorBody `json:"error"`
-}
-
-type anthropicErrorBody struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
-
-// Anthropic error type taxonomy used by Stage 0.
+// Anthropic error-type aliases for the client-side errors the server raises
+// directly. The canonical, complete taxonomy lives in translate (ErrType*);
+// the upstream-error re-classification (authentication/rate-limit/api) now lives
+// in the OpenAI-dialect translator's FromUpstreamError, so the server only needs
+// these two.
 const (
-	errInvalidRequest = "invalid_request_error"
-	errAuthentication = "authentication_error"
-	errPermission     = "permission_error"
-	errRateLimit      = "rate_limit_error"
-	errAPI            = "api_error"
-	errOverloaded     = "overloaded_error"
+	errInvalidRequest = translate.ErrTypeInvalidRequest
+	errAPI            = translate.ErrTypeAPI
 )
 
 // writeError serialises an Anthropic-shaped error and writes it to w with
 // the given HTTP status. The error event is logged at error level; the
 // logger's redaction layer scrubs the request body before emission.
 func writeError(w http.ResponseWriter, log *slog.Logger, status int, typ, msg string) {
-	body := anthropicError{
-		Type:  "error",
-		Error: anthropicErrorBody{Type: typ, Message: msg},
-	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	encodeErr := json.NewEncoder(w).Encode(body)
+	_, writeErr := w.Write(translate.AnthropicErrorJSON(typ, msg))
 
 	if log != nil {
 		log.Error("request failed",
@@ -48,8 +32,8 @@ func writeError(w http.ResponseWriter, log *slog.Logger, status int, typ, msg st
 			slog.String("error_type", typ),
 			slog.String("message", msg),
 		)
-		if encodeErr != nil {
-			log.Error("error-response encode failed", slog.String("error", encodeErr.Error()))
+		if writeErr != nil {
+			log.Error("error-response write failed", slog.String("error", writeErr.Error()))
 		}
 	}
 }

@@ -85,8 +85,7 @@ func (s *Server) handleMessagesStream(w http.ResponseWriter, r *http.Request, re
 	if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
 		body, _ := io.ReadAll(upstream.Body)
 		copyForwardedHeaders(w.Header(), upstream.Header)
-		s.writeUpstreamError(w, "/v1/messages", mappedModel, upstream.StatusCode, body,
-			fmt.Errorf("upstream status %d", upstream.StatusCode))
+		s.writeUpstreamError(w, "/v1/messages", mappedModel, upstream.StatusCode, body)
 		return
 	}
 

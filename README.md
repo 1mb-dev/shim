@@ -173,12 +173,16 @@ If you want *only* a transparent Anthropic proxy with no measurement, you don't
 need shim — point Claude Code at the endpoint directly. shim earns its place
 when you want the measurement and loud-fail layer.
 
-**Limitation (v0.3.0):** transparency covers **success** responses and the
-header allowlist. On an upstream **error**, shim still normalizes the status
-(e.g. a 429 surfaces as a 502) and replaces the body with its own
-Anthropic-shaped error envelope — the upstream's actual status and error body
-are captured only in the `upstream error` log line, not passed to the client.
-Verbatim error pass-through for the passthrough path lands in v0.3.1.
+Transparency covers **errors** too (v0.3.1): on an upstream non-2xx the
+passthrough path forwards the upstream status and error body **verbatim** — the
+native-Anthropic error envelope is already correctly shaped, so re-wrapping it
+would only lose fidelity. This is the error-path analog of the response
+pass-through and is owned by the dialect (`Translator.FromUpstreamError`), so
+the request handlers stay dialect-free. The DeepSeek (translating) path still
+re-classifies the status and emits shim's own Anthropic-shaped envelope on
+error — there the upstream body is OpenAI-shaped and may carry prompt content,
+so it must not leak; its detail stays in the `upstream error` log line. See
+`docs/adr/0002-translator-seam-error-path.md`.
 
 ## Operational limits
 
