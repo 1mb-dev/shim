@@ -19,6 +19,13 @@ on:
     tags: ['v*']
   pull_request:
 
+# Serialize per ref: a newer push to a branch cancels the older in-flight run
+# (avoids overlapping validates racing on the buildx/binfmt cache). Tag/release
+# runs are NEVER cancelled — don't kill a publish mid-flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 # Least privilege by default — read-only for every job (enough for checkout +
 # tests). The release job widens to write only where it needs to publish.
 permissions:
