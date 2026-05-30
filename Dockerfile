@@ -8,8 +8,13 @@ FROM alpine:3.20 AS certs
 RUN apk add --no-cache ca-certificates
 
 FROM scratch
+# goreleaser's dockers_v2 builds multi-platform in one pass and stages each
+# target's binary under $TARGETPLATFORM/ (e.g. linux/amd64/shim); buildx sets
+# TARGETPLATFORM per --platform. (Classic single-arch `COPY shim` would only
+# work for one arch.)
+ARG TARGETPLATFORM
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY shim /shim
+COPY ${TARGETPLATFORM}/shim /shim
 
 # shim binds 127.0.0.1:8082 by default (thesis: never bind all interfaces
 # without an authenticating proxy). In a container, reach it by setting
