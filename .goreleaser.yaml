@@ -1,0 +1,82 @@
+# goreleaser config for shim (schema v2). Mirrors `make build-all`:
+# CGO off, -trimpath, -s -w, across darwin/linux × amd64/arm64.
+#
+# Publishing (GitHub release, GHCR images, Homebrew tap) fires ONLY from the
+# release job on a version tag (.github/workflows/release.yml) — gated on the
+# repo going public. `goreleaser release --snapshot` builds everything locally
+# WITHOUT publishing, which is how this config is validated pre-public.
+version: 2
+
+project_name: shim
+
+builds:
+  - id: shim
+    main: ./cmd/shim
+    binary: shim
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: shim
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+# Multi-arch FROM-scratch image (dockers_v2 builds + manifests natively). Needs
+# docker buildx + QEMU — present in CI (setup-buildx/qemu actions). SBOM off to
+# keep the pipeline dependency-light (no syft); revisit as a supply-chain add.
+dockers_v2:
+  - id: shim
+    ids: [shim]
+    dockerfile: Dockerfile
+    images:
+      - ghcr.io/1mb-dev/shim
+    tags:
+      - "{{ .Version }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    sbom: "false"
+    labels:
+      org.opencontainers.image.source: "https://github.com/1mb-dev/shim"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.licenses: MIT
+
+# Homebrew cask pushed to the existing 1mb-dev/tap repo (modern Homebrew prefers
+# casks for prebuilt binaries). Needs a PAT with write access to that repo
+# (HOMEBREW_TAP_TOKEN) — configured at the public flip. Skipped on snapshot.
+homebrew_casks:
+  - name: shim
+    repository:
+      owner: 1mb-dev
+      name: tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/1mb-dev/shim"
+    description: "Glass-box Anthropic Messages API proxy — honest measurement, single static binary"
+    url:
+      verified: "github.com/1mb-dev/shim"
+    # The binary isn't signed/notarized, so strip the macOS quarantine xattr on
+    # install or Gatekeeper blocks it.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/shim"]
+          end
+
+release:
+  github:
+    owner: 1mb-dev
+    name: shim
+  # Created as a draft: a human publishes it after a final look (extra gate on
+  # top of "only runs on a tag").
+  draft: true
