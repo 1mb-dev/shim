@@ -104,6 +104,26 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+// handleMetricsPrometheus — GET /metrics → measure.Snapshot in Prometheus text
+// exposition format (the scrapeable sibling of /v1/metrics' human JSON). No auth:
+// matches /health + /v1/metrics' loopback-only trust model.
+//
+// Deliberately does NOT self-record: /metrics is a scrape target hit every ~15s,
+// so recording it would let monitoring traffic dominate requests_seen and turn
+// its own latency reservoir into a measure of string-building time, polluting
+// the very signal it reports. (The pre-existing /health + /v1/metrics handlers
+// DO self-record — same issue, deferred to P2 to avoid changing pre-existing
+// behaviour + tests inside this endpoint's commit.)
+func (s *Server) handleMetricsPrometheus(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	if _, err := w.Write(renderPrometheus(s.measure.Snapshot())); err != nil {
+		s.log.Error("response write failed",
+			slog.String("path", "/metrics"),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
 // logModelRewrite emits a breadcrumb when the adapter rewrites the
 // requested model name + records the rewrite event for /v1/metrics.
 // Thesis-2: never silently forward modified traffic. Empty requested →

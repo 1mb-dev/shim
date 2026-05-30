@@ -61,6 +61,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	mux.HandleFunc("POST /v1/messages", s.handleMessages)
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.handleCountTokens)
 	mux.HandleFunc("GET /v1/metrics", s.handleMetrics)
+	mux.HandleFunc("GET /metrics", s.handleMetricsPrometheus)
 	mux.HandleFunc("GET /health", s.handleHealth)
 
 	s.http = &http.Server{

@@ -712,6 +712,47 @@ func TestE2E_ThinkingMissing_StubEnforces400(t *testing.T) {
 	})
 }
 
+// ---- Prometheus /metrics scrape (v0.4 P1) ----
+// The honest-measurement thesis made scrapeable: after a real call, /metrics
+// exposes the same signals as /v1/metrics JSON in Prometheus text format.
+
+func TestE2E_PrometheusMetrics(t *testing.T) {
+	withBudget(t, perCaseBudget, func() {
+		h := Start(t)
+
+		// One real call populates requests_seen, the model rewrite, token delta.
+		status, body := postJSON(t, h.URL+"/v1/messages", map[string]any{
+			"model":      "claude-sonnet-4-6",
+			"max_tokens": 50,
+			"messages":   []map[string]any{{"role": "user", "content": "hi"}},
+		})
+		if status != 200 {
+			t.Fatalf("setup call status=%d body=%s", status, body)
+		}
+
+		resp, err := http.Get(h.URL + "/metrics")
+		if err != nil {
+			t.Fatalf("scrape /metrics: %v", err)
+		}
+		defer resp.Body.Close()
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain; version=0.0.4") {
+			t.Errorf("Content-Type = %q, want Prometheus text exposition", ct)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		text := string(raw)
+		for _, want := range []string{
+			`shim_requests_seen_total{endpoint="/v1/messages"}`,
+			`shim_rewrites_total{kind="model"}`,
+			`shim_tokens_upstream_prompt_total{endpoint="/v1/messages"} 7`, // fake-canned usage
+			"# TYPE shim_latency_seconds gauge",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("/metrics missing %q\n---\n%s", want, text)
+			}
+		}
+	})
+}
+
 func mustContainInOrder(t *testing.T, haystack string, needles ...string) {
 	t.Helper()
 	idx := 0
