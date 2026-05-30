@@ -25,6 +25,16 @@ type HarnessOpts struct {
 	// ExtraEnv is appended to the standard env block; later entries
 	// override earlier ones (Go's exec.Cmd semantics).
 	ExtraEnv []string
+
+	// Adapter selects the ADAPTER env value. Empty defaults to "deepseek".
+	Adapter string
+
+	// UpstreamURL, when non-empty, is used as UPSTREAM_BASE_URL and the harness
+	// does NOT create or own an OpenAI FakeUpstream (h.Upstream stays nil) — the
+	// caller supplies and closes its own upstream (e.g. an AnthropicFakeUpstream
+	// for the passthrough adapter). Empty keeps the default deepseek+OpenAI-fake
+	// behaviour every existing test relies on.
+	UpstreamURL string
 }
 
 // Harness owns one spawned ./shim process + one fake upstream for the
@@ -52,31 +62,49 @@ func Start(t *testing.T, opts ...HarnessOpts) *Harness {
 		t.Fatal("shimBinary unset; TestMain must call BuildShim")
 	}
 
-	upstream := NewFakeUpstream()
+	var opt HarnessOpts
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	adapterName := opt.Adapter
+	if adapterName == "" {
+		adapterName = "deepseek"
+	}
+
+	// Default path: the harness owns an OpenAI FakeUpstream. When the caller
+	// supplies UpstreamURL (e.g. an AnthropicFakeUpstream for passthrough), use
+	// it and own nothing — the caller closes its own upstream.
+	var upstream *FakeUpstream
+	upstreamURL := opt.UpstreamURL
+	if upstreamURL == "" {
+		upstream = NewFakeUpstream()
+		upstreamURL = upstream.URL
+	}
+	closeUpstream := func() {
+		if upstream != nil {
+			upstream.Close()
+		}
+	}
 
 	// Empty env file so config.Load reads nothing from disk; all config
 	// comes from the explicit env block below.
 	envFile, err := os.CreateTemp(t.TempDir(), "shim-empty-env-*.env")
 	if err != nil {
-		upstream.Close()
+		closeUpstream()
 		t.Fatalf("create empty env file: %v", err)
 	}
 	envFile.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
-	var opt HarnessOpts
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-
 	cmd := exec.CommandContext(ctx, shimBinary)
 	cmd.Env = append(os.Environ(),
 		"SHIM_ENV_FILE="+envFile.Name(),
 		"BIND_ADDR=127.0.0.1",
 		"PORT=0",
-		"ADAPTER=deepseek",
-		"UPSTREAM_BASE_URL="+upstream.URL,
+		"ADAPTER="+adapterName,
+		"UPSTREAM_BASE_URL="+upstreamURL,
 		"UPSTREAM_API_KEY=test-key",
 		"LOG_LEVEL=info",
 		"LOG_REDACT=true",
@@ -87,7 +115,7 @@ func Start(t *testing.T, opts ...HarnessOpts) *Harness {
 	cmd.Stderr = sbuf
 
 	if err := cmd.Start(); err != nil {
-		upstream.Close()
+		closeUpstream()
 		cancel()
 		t.Fatalf("start shim: %v", err)
 	}
@@ -109,7 +137,7 @@ func Start(t *testing.T, opts ...HarnessOpts) *Harness {
 	if err != nil {
 		h.dump()
 		h.stop()
-		upstream.Close()
+		closeUpstream()
 		t.Fatalf("discover addr: %v", err)
 	}
 	h.URL = "http://" + addr
@@ -120,7 +148,7 @@ func Start(t *testing.T, opts ...HarnessOpts) *Harness {
 	if err := h.waitHealthy(3 * time.Second); err != nil {
 		h.dump()
 		h.stop()
-		upstream.Close()
+		closeUpstream()
 		t.Fatalf("health: %v", err)
 	}
 
@@ -130,7 +158,10 @@ func Start(t *testing.T, opts ...HarnessOpts) *Harness {
 
 func (h *Harness) cleanup() {
 	h.stop()
-	h.Upstream.Close()
+	// Nil when the caller supplied its own UpstreamURL (it owns the close).
+	if h.Upstream != nil {
+		h.Upstream.Close()
+	}
 }
 
 // stop terminates the shim process. Sends SIGINT (shim's main.go listens
