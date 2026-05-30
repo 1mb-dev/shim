@@ -3,6 +3,24 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.1] — Passthrough error transparency + e2e (2026-05-30)
+
+Completes the passthrough's transparency story on the error path and proves the
+whole passthrough flow through the real binary. See
+`docs/adr/0002-translator-seam-error-path.md`.
+
+### Added
+- `Translator.FromUpstreamError(upstreamStatus, upstreamBody) → (clientStatus, clientBody)` — the error-path analog of `FromUpstream`. anthropic-passthrough forwards the upstream status + error body **verbatim** (native-Anthropic errors are already correctly shaped); DeepSeek re-classifies (401/403→401, 429→429, 4xx/5xx→502) and emits shim's own Anthropic envelope (the OpenAI error body must not leak). Handlers stay dialect-free.
+- Full-process passthrough e2e: parameterized harness (`HarnessOpts.Adapter`/`UpstreamURL`) + an `AnthropicFakeUpstream`. Covers verbatim non-stream (fields shim doesn't model survive), byte-identical SSE, and error transparency (400/429/500/529 pass through, not re-mapped).
+- `translate.AnthropicErrorJSON` + `translate.ErrType*` — the Anthropic error envelope + type taxonomy, now the single source of truth (the server aliases only what it raises directly).
+
+### Changed
+- The upstream-error path emits a single `upstream error` log line carrying both `upstream_status` and the client-facing `status` (was: a second `request failed` line). A 2xx response that fails to read is now a dialect-independent 502, not routed through the dialect error render.
+- `adapter.ReadNormalizedResponse` — shared `NormalizeResponse` body for deepseek + anthropic (they were byte-identical bar the error prefix).
+
+### Docs
+- ADR 0002 — extends the Translator seam to the error path (same transport-dialect axis as ADR 0001). README passthrough limitation note updated: error transparency now ships.
+
 ## [0.3.0] — Translator seam + anthropic-passthrough (2026-05-29)
 
 The "v1 shape": a pluggable per-adapter translator carries two transport
