@@ -14,10 +14,10 @@ LINT      := $(shell command -v golangci-lint 2>/dev/null || echo $(GOBIN)/golan
 # Stage 0 cross-compile matrix (3 platforms — see plan §AC 2 amendment).
 PLATFORMS := darwin/arm64 linux/amd64 linux/arm64
 
-.PHONY: help build build-all test test-race e2e smoke coverage lint vet clean
+.PHONY: help build build-all test test-race e2e smoke smoke-ollama coverage lint vet clean
 
 help:
-	@echo "targets: build build-all test e2e smoke coverage lint vet clean"
+	@echo "targets: build build-all test e2e smoke smoke-ollama coverage lint vet clean"
 
 build:
 	CGO_ENABLED=0 go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/shim
@@ -54,8 +54,16 @@ e2e:
 # DEEPSEEK_SMOKE_API_KEY (distinct from UPSTREAM_API_KEY for billing
 # isolation). Never run in CI by default; pre-release/pre-push only.
 smoke:
-	go test -tags smoke -count=1 -v ./internal/smoke/...
+	go test -tags smoke -count=1 -v -run TestSmoke_LiveDeepSeek ./internal/smoke/...
 	@echo "# smoke complete (skipped if SHIM_SMOKE != 1; see internal/smoke/README.md)"
+
+# Free, offline smoke against a LOCAL Ollama (no API key). Double-gated: build
+# tag `smoke` AND env var SHIM_OLLAMA_SMOKE=1; also skips if Ollama is
+# unreachable at localhost:11434. Exercises the full claude-*→OpenAI→Anthropic
+# round-trip at zero cost. SHIM_OLLAMA_MODEL overrides the default (llama3.3).
+smoke-ollama:
+	go test -tags smoke -count=1 -v -run TestSmoke_LiveOllama ./internal/smoke/...
+	@echo "# ollama smoke complete (skipped if SHIM_OLLAMA_SMOKE != 1 or Ollama unreachable)"
 
 coverage:
 	go test $(RACE) -coverprofile=cover.out ./...

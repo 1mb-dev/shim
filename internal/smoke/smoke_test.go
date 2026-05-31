@@ -1,19 +1,24 @@
 //go:build smoke
 
-// Package smoke runs an opt-in live round-trip against api.deepseek.com.
-// Build-tag gated AND env-var gated so it cannot accidentally execute
-// during `make test`, `make e2e`, or unattended CI runs.
+// Package smoke runs opt-in live round-trips. Build-tag gated AND env-var gated
+// so they cannot accidentally execute during `make test`, `make e2e`, or
+// unattended CI runs. Two upstreams:
 //
-// Required env to run:
+// DeepSeek (paid) — `make smoke`:
 //
 //	SHIM_SMOKE=1                       // hard gate; absent → t.Skip
 //	DEEPSEEK_SMOKE_API_KEY=<key>       // distinct from UPSTREAM_API_KEY
-//
-// Optional:
-//
-//	SHIM_SMOKE_MODEL=<claude-…>        // default: claude-sonnet-4-6 (cheapest mapping)
+//	SHIM_SMOKE_MODEL=<claude-…>        // optional; default claude-sonnet-4-6
 //
 // Cost per run: roughly $0.001 against the deepseek-v4-flash tier.
+//
+// Ollama (free, offline) — `make smoke-ollama`:
+//
+//	SHIM_OLLAMA_SMOKE=1                // hard gate; absent → t.Skip
+//	SHIM_OLLAMA_MODEL=<tag>            // optional; default llama3.3
+//
+// Also skips (not fails) when Ollama is unreachable at localhost:11434. No key,
+// no cost — exercises the full claude-*→OpenAI→Anthropic round-trip locally.
 package smoke
 
 import (
@@ -38,6 +43,13 @@ const (
 	keyEnv     = "DEEPSEEK_SMOKE_API_KEY"
 	modelEnv   = "SHIM_SMOKE_MODEL"
 	defaultMdl = "claude-sonnet-4-6"
+
+	// Ollama smoke: free, offline, no API key.
+	ollamaGateEnv      = "SHIM_OLLAMA_SMOKE"
+	ollamaModelEnv     = "SHIM_OLLAMA_MODEL"
+	ollamaDefaultModel = "llama3.3"
+	ollamaBaseURL      = "http://localhost:11434/v1"
+	ollamaTagsURL      = "http://localhost:11434/api/tags"
 )
 
 // TestSmoke_LiveDeepSeek spawns ./shim against api.deepseek.com, sends one
@@ -141,6 +153,124 @@ func TestSmoke_LiveDeepSeek(t *testing.T) {
 	t.Logf("smoke ok — model=%s reply=%q", model, strings.TrimSpace(ar.Content[0].Text))
 }
 
+// TestSmoke_LiveOllama spawns ./shim against a LOCAL Ollama (no API key) and
+// asserts one /v1/messages round-trip yields a clean Anthropic response with
+// populated metrics. Free and offline. Skips when SHIM_OLLAMA_SMOKE != 1 or
+// Ollama is unreachable at localhost:11434.
+func TestSmoke_LiveOllama(t *testing.T) {
+	if os.Getenv(ollamaGateEnv) != "1" {
+		t.Skipf("ollama smoke gate closed: set %s=1 to run", ollamaGateEnv)
+	}
+	model := os.Getenv(ollamaModelEnv)
+	if model == "" {
+		model = ollamaDefaultModel
+	}
+	if !ollamaReachable() {
+		t.Skipf("ollama not reachable at %s — start it and `ollama pull %s`", ollamaTagsURL, model)
+	}
+
+	shim, cleanupBin, err := buildShim(t)
+	if err != nil {
+		t.Fatalf("build shim: %v", err)
+	}
+	t.Cleanup(cleanupBin)
+
+	// ADAPTER=ollama: no key (authRequired=false). UPSTREAM_MODEL pins the local
+	// tag for all roles via the empty-role-default fall-through.
+	srv := startShimEnv(t, shim,
+		"ADAPTER=ollama",
+		"UPSTREAM_BASE_URL="+ollamaBaseURL,
+		"UPSTREAM_MODEL="+model,
+	)
+	defer srv.stop()
+
+	body, _ := json.Marshal(map[string]any{
+		"model":      "claude-sonnet-4-6", // → UPSTREAM_MODEL (rewrite recorded)
+		"max_tokens": 32,
+		"messages":   []map[string]any{{"role": "user", "content": "Reply with the single word OK."}},
+	})
+	// Local models can be slow on first load; allow generous headroom.
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "POST", srv.url+"/v1/messages", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		srv.dump()
+		t.Fatalf("POST /v1/messages: %v", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		srv.dump()
+		t.Fatalf("status=%d body=%s", resp.StatusCode, respBody)
+	}
+
+	var ar struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(respBody, &ar); err != nil {
+		t.Fatalf("unmarshal response: %v\nbody: %s", err, respBody)
+	}
+	if ar.Type != "message" || ar.Role != "assistant" {
+		t.Errorf("response not Anthropic-shaped: %+v", ar)
+	}
+	if len(ar.Content) == 0 || ar.Content[0].Type != "text" || strings.TrimSpace(ar.Content[0].Text) == "" {
+		t.Errorf("empty or wrong content: %+v", ar.Content)
+	}
+
+	// Metrics: round-trip happened, was clean, and the model rewrite fired. Token
+	// delta is intentionally NOT asserted — Ollama's usage block varies by version
+	// and RecordTokenDelta no-ops on zero usage; a strict check would flake.
+	mResp, err := http.Get(srv.url + "/v1/metrics")
+	if err != nil {
+		t.Fatalf("metrics get: %v", err)
+	}
+	defer mResp.Body.Close()
+	var snap struct {
+		RequestsSeen   map[string]int `json:"requests_seen"`
+		UpstreamErrors map[string]struct {
+			Total int `json:"total"`
+		} `json:"upstream_errors"`
+		Rewrites map[string]int `json:"rewrites"`
+	}
+	if err := json.NewDecoder(mResp.Body).Decode(&snap); err != nil {
+		t.Fatalf("metrics decode: %v", err)
+	}
+	if snap.RequestsSeen["/v1/messages"] < 1 {
+		t.Errorf("requests_seen[/v1/messages] = %d, want >=1", snap.RequestsSeen["/v1/messages"])
+	}
+	if got := snap.UpstreamErrors["/v1/messages"].Total; got != 0 {
+		t.Errorf("upstream_errors total = %d, want 0 (clean round-trip)", got)
+	}
+	if snap.Rewrites["model"] < 1 {
+		t.Errorf("rewrites.model = %d, want >=1 (claude-* → %s)", snap.Rewrites["model"], model)
+	}
+
+	t.Logf("ollama smoke ok — model=%s reply=%q", model, strings.TrimSpace(ar.Content[0].Text))
+}
+
+// ollamaReachable reports whether a local Ollama answers /api/tags quickly.
+func ollamaReachable() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", ollamaTagsURL, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
 // --- lifecycle helpers (self-contained; mirrors internal/e2e but no fake upstream) ---
 
 type liveShim struct {
@@ -176,6 +306,17 @@ func (s *liveShim) dump() {
 var addrRe = regexp.MustCompile(`"addr":"(127\.0\.0\.1:\d+)"`)
 
 func startShim(t *testing.T, binary, apiKey string) *liveShim {
+	return startShimEnv(t, binary,
+		"ADAPTER=deepseek",
+		"UPSTREAM_BASE_URL=https://api.deepseek.com/v1",
+		"UPSTREAM_API_KEY="+apiKey,
+	)
+}
+
+// startShimEnv spawns ./shim with the given upstream env vars appended to a
+// common base (loopback bind, ephemeral port, redacting logs). upstreamEnv
+// carries ADAPTER + UPSTREAM_* and wins over any inherited process env.
+func startShimEnv(t *testing.T, binary string, upstreamEnv ...string) *liveShim {
 	t.Helper()
 	envFile, err := os.CreateTemp(t.TempDir(), "shim-smoke-env-*.env")
 	if err != nil {
@@ -189,12 +330,10 @@ func startShim(t *testing.T, binary, apiKey string) *liveShim {
 		"SHIM_ENV_FILE="+envFile.Name(),
 		"BIND_ADDR=127.0.0.1",
 		"PORT=0",
-		"ADAPTER=deepseek",
-		"UPSTREAM_BASE_URL=https://api.deepseek.com/v1",
-		"UPSTREAM_API_KEY="+apiKey,
 		"LOG_LEVEL=info",
 		"LOG_REDACT=true",
 	)
+	cmd.Env = append(cmd.Env, upstreamEnv...)
 	sbuf := newBoundedBuffer(1 << 20)
 	cmd.Stderr = sbuf
 	if err := cmd.Start(); err != nil {
