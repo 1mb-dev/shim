@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"strings"
@@ -8,6 +9,21 @@ import (
 
 	"github.com/1mb-dev/shim/internal/config"
 )
+
+// TestDispatchVersion: `shim version` (and -v/--version) print "shim <version>"
+// and exit 0 without starting the server.
+func TestDispatchVersion(t *testing.T) {
+	for _, arg := range []string{"version", "-v", "--version"} {
+		var out bytes.Buffer
+		code, err := dispatch([]string{arg}, &out)
+		if err != nil || code != 0 {
+			t.Fatalf("dispatch %q = (%d, %v), want (0, nil)", arg, code, err)
+		}
+		if got := strings.TrimSpace(out.String()); got != "shim dev" {
+			t.Errorf("%q output = %q, want %q", arg, got, "shim dev")
+		}
+	}
+}
 
 // TestBuildAdapter_AnthropicNoDeepseekMisroute fences the v0.5 fix: with
 // ADAPTER=anthropic and UPSTREAM_BASE_URL unset, buildAdapter must resolve the

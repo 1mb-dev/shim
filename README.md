@@ -244,6 +244,8 @@ claude
 
 The launcher prints a single breadcrumb line to stderr (`shim run → claude=/path/to/claude, base=http://...`) so you can see what it resolved before claude's own output starts.
 
+`shim version` prints the build version (set at release; `dev` for a plain `go build`).
+
 ## Measurement
 
 `GET /v1/metrics` returns a JSON snapshot of what shim has done since

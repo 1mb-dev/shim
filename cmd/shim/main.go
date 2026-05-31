@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -28,8 +29,12 @@ import (
 	"github.com/1mb-dev/shim/internal/server"
 )
 
+// version is set at release via -ldflags "-X main.version={{.Version}}".
+// "dev" for a plain `go build` / `go install` without ldflags.
+var version = "dev"
+
 func main() {
-	code, err := dispatch(os.Args[1:])
+	code, err := dispatch(os.Args[1:], os.Stdout)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "shim:", err)
 		os.Exit(1)
@@ -39,9 +44,15 @@ func main() {
 
 // dispatch parses argv and returns (exitCode, err). Exit code is honoured
 // when err is nil; err prints "shim: ..." and exits 1.
-func dispatch(args []string) (int, error) {
-	if len(args) >= 1 && args[0] == "run" {
-		return runLauncher(args[1:])
+func dispatch(args []string, stdout io.Writer) (int, error) {
+	if len(args) >= 1 {
+		switch args[0] {
+		case "run":
+			return runLauncher(args[1:])
+		case "version", "-v", "--version":
+			fmt.Fprintln(stdout, "shim", version)
+			return 0, nil
+		}
 	}
 	return 0, runServer()
 }
