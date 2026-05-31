@@ -1,4 +1,4 @@
-package deepseek
+package openaichat
 
 import (
 	"context"
@@ -12,26 +12,30 @@ import (
 	"testing"
 )
 
-// testAdapter returns a freshly-built impl for isolated unit tests.
+// ds is the deepseek preset's model defaults — the single source of truth for
+// the expected values below (so the table can't drift from the row).
+var ds = presets["deepseek"].models
+
+// testAdapter builds a deepseek-preset impl directly (bypassing New's base-URL
+// defaulting) so the not-configured / missing-baseURL guards stay testable.
 func testAdapter(baseURL, apiKey string) *impl {
 	return &impl{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
+		name:         "deepseek",
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		apiKey:       apiKey,
+		authRequired: presets["deepseek"].authRequired,
+		models:       presets["deepseek"].models,
 	}
 }
 
-// testAdapterRoles is testAdapter with the per-role model overrides also
-// settable. Empty values fall back to DefaultOpusModel / DefaultSonnetModel /
-// DefaultHaikuModel.
+// testAdapterRoles is testAdapter with the per-role / catch-all overrides set.
 func testAdapterRoles(baseURL, apiKey, modelOverride, opus, sonnet, haiku string) *impl {
-	return &impl{
-		baseURL:       strings.TrimRight(baseURL, "/"),
-		apiKey:        apiKey,
-		modelOverride: modelOverride,
-		opusModel:     opus,
-		sonnetModel:   sonnet,
-		haikuModel:    haiku,
-	}
+	a := testAdapter(baseURL, apiKey)
+	a.modelOverride = modelOverride
+	a.opusModel = opus
+	a.sonnetModel = sonnet
+	a.haikuModel = haiku
+	return a
 }
 
 func TestName(t *testing.T) {
@@ -42,12 +46,8 @@ func TestName(t *testing.T) {
 }
 
 func TestMapModel(t *testing.T) {
-	// Table covers the full prefix matrix from the DeepSeek official guide:
-	//   claude-opus*   → opus model (default or override)
-	//   claude-sonnet* → sonnet model
-	//   claude-haiku*  → haiku model
-	// Plus the fallback branches: empty input, non-claude name, legacy
-	// claude-3-* (no prefix match, falls through to pass-through/override).
+	// Table covers the full prefix matrix, fallback branches, and the
+	// hyphen-anchor fence. Expected values come from the deepseek row (ds).
 	tests := []struct {
 		name          string
 		modelOverride string // UPSTREAM_MODEL
@@ -58,13 +58,13 @@ func TestMapModel(t *testing.T) {
 		want          string
 	}{
 		// Per-role defaults
-		{"opus default", "", "", "", "", "claude-opus-4-7", DefaultOpusModel},
-		{"opus default exact", "", "", "", "", "claude-opus", DefaultOpusModel},
-		{"opus default with [1m] suffix", "", "", "", "", "claude-opus-4-7[1m]", DefaultOpusModel},
-		{"sonnet default", "", "", "", "", "claude-sonnet-4-6", DefaultSonnetModel},
-		{"sonnet default exact", "", "", "", "", "claude-sonnet", DefaultSonnetModel},
-		{"haiku default", "", "", "", "", "claude-haiku-4-5", DefaultHaikuModel},
-		{"haiku default exact", "", "", "", "", "claude-haiku", DefaultHaikuModel},
+		{"opus default", "", "", "", "", "claude-opus-4-7", ds.Opus},
+		{"opus default exact", "", "", "", "", "claude-opus", ds.Opus},
+		{"opus default with [1m] suffix", "", "", "", "", "claude-opus-4-7[1m]", ds.Opus},
+		{"sonnet default", "", "", "", "", "claude-sonnet-4-6", ds.Sonnet},
+		{"sonnet default exact", "", "", "", "", "claude-sonnet", ds.Sonnet},
+		{"haiku default", "", "", "", "", "claude-haiku-4-5", ds.Haiku},
+		{"haiku default exact", "", "", "", "", "claude-haiku", ds.Haiku},
 
 		// Per-role overrides
 		{"opus override", "", "my-opus", "", "", "claude-opus", "my-opus"},
@@ -72,11 +72,15 @@ func TestMapModel(t *testing.T) {
 		{"haiku override", "", "", "", "my-haiku", "claude-haiku", "my-haiku"},
 
 		// Override independence — only opus set should not affect sonnet/haiku
-		{"only opus override leaves sonnet default", "", "my-opus", "", "", "claude-sonnet-4-6", DefaultSonnetModel},
-		{"only opus override leaves haiku default", "", "my-opus", "", "", "claude-haiku-4-5", DefaultHaikuModel},
+		{"only opus override leaves sonnet default", "", "my-opus", "", "", "claude-sonnet-4-6", ds.Sonnet},
+		{"only opus override leaves haiku default", "", "my-opus", "", "", "claude-haiku-4-5", ds.Haiku},
 
-		// Empty input falls back to modelOverride or DefaultModel
-		{"empty input no override", "", "", "", "", "", DefaultModel},
+		// R1 — UPSTREAM_MODEL must NOT override a role that has a preset default.
+		{"UPSTREAM_MODEL does not leak into opus role", "deepseek-reasoner", "", "", "", "claude-opus", ds.Opus},
+		{"UPSTREAM_MODEL does not leak into sonnet role", "deepseek-reasoner", "", "", "", "claude-sonnet-4-6", ds.Sonnet},
+
+		// Empty input falls back to modelOverride or preset Default
+		{"empty input no override", "", "", "", "", "", ds.Default},
 		{"empty input with override", "deepseek-reasoner", "", "", "", "", "deepseek-reasoner"},
 
 		// Non-claude-{opus,sonnet,haiku} inputs
@@ -88,10 +92,7 @@ func TestMapModel(t *testing.T) {
 		{"legacy claude-3-5-sonnet pass-through", "", "", "", "", "claude-3-5-sonnet-20240620", "claude-3-5-sonnet-20240620"},
 		{"legacy claude-3-5-sonnet with UPSTREAM_MODEL", "deepseek-chat", "", "", "", "claude-3-5-sonnet-20240620", "deepseek-chat"},
 
-		// Hyphen-anchor fence — strings that share the prefix but have no
-		// hyphen separator (or no hyphen + extra chars) must NOT match.
-		// Pre-fix, `strings.HasPrefix(model, "claude-opus")` matched
-		// `claude-opusxxx` and silently re-routed it to opus default.
+		// Hyphen-anchor fence — prefix without a hyphen separator must NOT match.
 		{"claude-opusxxx pass-through (no hyphen anchor)", "", "", "", "", "claude-opusxxx", "claude-opusxxx"},
 		{"claude-sonnetx pass-through (no hyphen anchor)", "", "", "", "", "claude-sonnetx", "claude-sonnetx"},
 		{"claude-haiku2 pass-through (no hyphen anchor)", "", "", "", "", "claude-haiku2", "claude-haiku2"},
@@ -217,13 +218,12 @@ func TestNormalizeResponse_Non2xx(t *testing.T) {
 	}
 }
 
-// TestHappyPath wires BuildRequest + Do + NormalizeResponse end-to-end
-// against a stub upstream serving the recorded fixture.
+// TestHappyPath wires BuildRequest + Do + NormalizeResponse end-to-end against
+// a stub upstream serving the recorded deepseek fixture.
 func TestHappyPath(t *testing.T) {
 	fixture := loadFixture(t, "deepseek-helloworld.json")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify shim sent what we expect.
 		if r.URL.Path != "/chat/completions" {
 			t.Errorf("path = %q", r.URL.Path)
 		}
@@ -258,9 +258,8 @@ func TestHappyPath(t *testing.T) {
 	}
 }
 
-// TestFixtureSchema asserts the recorded fixture still satisfies the
-// minimum OpenAI ChatCompletions shape. Fails loud when DeepSeek's response
-// shape drifts and we accidentally re-record a malformed fixture.
+// TestFixtureSchema asserts the recorded fixture still satisfies the minimum
+// OpenAI ChatCompletions shape.
 func TestFixtureSchema(t *testing.T) {
 	raw := loadFixture(t, "deepseek-helloworld.json")
 	var f struct {
@@ -304,16 +303,16 @@ func TestFixtureSchema(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
-	a, err := New(ConfigureOpts{APIKey: "sk-cfg"})
+	a, err := New("deepseek", Config{APIKey: "sk-cfg"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	got := a.(*impl)
-	if got.baseURL != DefaultBaseURL {
+	if got.baseURL != presets["deepseek"].defaultBaseURL {
 		t.Errorf("empty baseURL should default, got %q", got.baseURL)
 	}
 
-	a, err = New(ConfigureOpts{
+	a, err = New("deepseek", Config{
 		BaseURL:       "https://x/v1/",
 		APIKey:        "sk-cfg",
 		ModelOverride: "deepseek-reasoner",
@@ -342,11 +341,10 @@ func TestNew(t *testing.T) {
 	}
 }
 
-// TestNew_FreshInstance: each call to New returns a distinct instance so
-// tests (and any future multi-tenant use) don't share state.
+// TestNew_FreshInstance: each New returns a distinct instance (no shared state).
 func TestNew_FreshInstance(t *testing.T) {
-	a1, _ := New(ConfigureOpts{APIKey: "k1"})
-	a2, _ := New(ConfigureOpts{APIKey: "k2"})
+	a1, _ := New("deepseek", Config{APIKey: "k1"})
+	a2, _ := New("deepseek", Config{APIKey: "k2"})
 	if a1.(*impl) == a2.(*impl) {
 		t.Error("New returned the same pointer twice — singleton leak")
 	}
@@ -355,18 +353,89 @@ func TestNew_FreshInstance(t *testing.T) {
 	}
 }
 
+func TestNew_UnknownPreset(t *testing.T) {
+	_, err := New("bogus", Config{APIKey: "k"})
+	if err == nil {
+		t.Fatal("expected error for unknown preset")
+	}
+	// Message must name the offending preset and list valid ones (loud-fail).
+	if !strings.Contains(err.Error(), "bogus") || !strings.Contains(err.Error(), "deepseek") {
+		t.Errorf("error should name the bad preset and valid ones, got %v", err)
+	}
+}
+
+// TestNoAuth fences the authRequired=false path (Fork 2-b, the Ollama enabler):
+// Validate passes keyless, BuildRequest sends no Authorization header, but an
+// optional key is still forwarded when present (e.g. Ollama behind a proxy).
+func TestNoAuth(t *testing.T) {
+	a := &impl{
+		name:         "synthetic",
+		baseURL:      "http://localhost:11434/v1",
+		authRequired: false,
+		models:       roleModels{Default: "llama3.3"},
+	}
+	if err := a.Validate(); err != nil {
+		t.Fatalf("no-auth Validate should pass keyless: %v", err)
+	}
+	req, err := a.BuildRequest(context.Background(), []byte(`{}`))
+	if err != nil {
+		t.Fatalf("no-auth BuildRequest: %v", err)
+	}
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Errorf("no-auth should send no Authorization header, got %q", got)
+	}
+	a.apiKey = "opt"
+	req, _ = a.BuildRequest(context.Background(), []byte(`{}`))
+	if got := req.Header.Get("Authorization"); got != "Bearer opt" {
+		t.Errorf("optional key should be sent when present, got %q", got)
+	}
+}
+
+// TestBuildRequest_ExtraHeaders fences the per-row extra-header application
+// (Fork 5-b, OpenRouter attribution headers — mechanism present, default nil).
+func TestBuildRequest_ExtraHeaders(t *testing.T) {
+	a := &impl{
+		name:         "synthetic",
+		baseURL:      "https://x",
+		apiKey:       "k",
+		authRequired: true,
+		models:       roleModels{Default: "m"},
+		extraHeaders: map[string]string{"X-Title": "shim", "HTTP-Referer": "https://example"},
+	}
+	req, err := a.BuildRequest(context.Background(), []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("X-Title"); got != "shim" {
+		t.Errorf("X-Title = %q", got)
+	}
+	if got := req.Header.Get("HTTP-Referer"); got != "https://example" {
+		t.Errorf("HTTP-Referer = %q", got)
+	}
+}
+
+// TestPresets_Invariants guards every row (incl. those P2 adds): MapModel's
+// empty-input / empty-role-default fall-throughs depend on a non-empty Default,
+// and BuildRequest needs a base URL.
+func TestPresets_Invariants(t *testing.T) {
+	for name, p := range presets {
+		if p.models.Default == "" {
+			t.Errorf("preset %q has empty models.Default", name)
+		}
+		if p.defaultBaseURL == "" {
+			t.Errorf("preset %q has empty defaultBaseURL", name)
+		}
+	}
+}
+
 // --- helpers ---
 
 func loadFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	// testdata/fixtures lives at the repo root. Walk up from package dir.
-	dirs := []string{
-		filepath.Join("..", "..", "..", "testdata", "fixtures", name),
-	}
-	for _, p := range dirs {
-		if data, err := os.ReadFile(p); err == nil {
-			return data
-		}
+	p := filepath.Join("..", "..", "..", "testdata", "fixtures", name)
+	if data, err := os.ReadFile(p); err == nil {
+		return data
 	}
 	t.Fatalf("fixture %s not found", name)
 	return nil

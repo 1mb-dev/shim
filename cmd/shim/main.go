@@ -21,7 +21,7 @@ import (
 
 	"github.com/1mb-dev/shim/internal/adapter"
 	"github.com/1mb-dev/shim/internal/adapter/anthropic"
-	"github.com/1mb-dev/shim/internal/adapter/deepseek"
+	"github.com/1mb-dev/shim/internal/adapter/openaichat"
 	"github.com/1mb-dev/shim/internal/config"
 	"github.com/1mb-dev/shim/internal/launcher"
 	"github.com/1mb-dev/shim/internal/obslog"
@@ -99,8 +99,8 @@ func runServer() error {
 // Unknown values fail loudly rather than falling back silently (thesis-2).
 func registerAdapter(cfg *config.Config, log *slog.Logger) error {
 	switch cfg.Adapter {
-	case deepseek.Name:
-		a, err := deepseek.New(deepseek.ConfigureOpts{
+	case "deepseek":
+		a, err := openaichat.New("deepseek", openaichat.Config{
 			BaseURL:       cfg.UpstreamBaseURL,
 			APIKey:        cfg.UpstreamAPIKey,
 			ModelOverride: cfg.UpstreamModel,
@@ -123,7 +123,7 @@ func registerAdapter(cfg *config.Config, log *slog.Logger) error {
 		}
 		adapter.Register(a)
 	default:
-		return fmt.Errorf("unknown ADAPTER %q (valid: %q, %q)", cfg.Adapter, deepseek.Name, anthropic.Name)
+		return fmt.Errorf("unknown ADAPTER %q (valid: %q, %q)", cfg.Adapter, "deepseek", anthropic.Name)
 	}
 	return nil
 }
