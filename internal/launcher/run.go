@@ -41,10 +41,8 @@ func Run(opts Options) (int, error) {
 		return 0, fmt.Errorf("%s not found in PATH: %w", bin, err)
 	}
 
-	if _, werr := fmt.Fprintf(stderr, "shim run → %s=%s, base=%s\n", bin, path, opts.BaseURL); werr != nil {
-		// best-effort stderr; do not fail run on stderr flush
-		_ = werr
-	}
+	// best-effort breadcrumb; a failed stderr write must not fail the run.
+	fmt.Fprintf(stderr, "shim run → %s=%s, base=%s\n", bin, path, opts.BaseURL)
 
 	cmd := exec.Command(path, opts.Args...)
 	cmd.Stdin = os.Stdin
