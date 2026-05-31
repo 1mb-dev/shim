@@ -13,24 +13,25 @@ import "encoding/json"
 // translating path only needs the modelled fields; the identity (passthrough)
 // translator forwards the original request bytes verbatim to avoid the drop.
 type AnthropicRequest struct {
-	Model         string                   `json:"model"`
-	Messages      []AnthropicMessage       `json:"messages"`
-	System        json.RawMessage          `json:"system,omitempty"` // string | content[]
-	MaxTokens     int                      `json:"max_tokens"`
-	Stream        bool                     `json:"stream,omitempty"`
-	Temperature   *float64                 `json:"temperature,omitempty"`
-	TopP          *float64                 `json:"top_p,omitempty"`
-	StopSequences []string                 `json:"stop_sequences,omitempty"`
-	Tools         []AnthropicTool          `json:"tools,omitempty"`
-	ToolChoice    json.RawMessage          `json:"tool_choice,omitempty"`
-	Thinking      *AnthropicThinkingConfig `json:"thinking,omitempty"`
+	Model         string             `json:"model"`
+	Messages      []AnthropicMessage `json:"messages"`
+	System        json.RawMessage    `json:"system,omitempty"` // string | content[]
+	MaxTokens     int                `json:"max_tokens"`
+	Stream        bool               `json:"stream,omitempty"`
+	Temperature   *float64           `json:"temperature,omitempty"`
+	TopP          *float64           `json:"top_p,omitempty"`
+	StopSequences []string           `json:"stop_sequences,omitempty"`
+	Tools         []AnthropicTool    `json:"tools,omitempty"`
+	ToolChoice    json.RawMessage    `json:"tool_choice,omitempty"`
+	Thinking      *ThinkingConfig    `json:"thinking,omitempty"`
 }
 
-// AnthropicThinkingConfig is the extended-thinking request param. Stage
-// 2.6b only inspects Type ("enabled"|"disabled") — budget_tokens, display,
-// and other fields get json-unmarshal-silently-dropped. Stage 2.6c adds
-// them when there's a code path that uses them.
-type AnthropicThinkingConfig struct {
+// ThinkingConfig is the extended-thinking control param. The {type} shape is
+// identical on both wire formats — Anthropic's request thinking field and the
+// OpenAI/DeepSeek-dialect thinking field — so one type serves both. Only Type
+// ("enabled"|"disabled") is inspected; other fields (budget_tokens, display, …)
+// are unmarshalled and dropped.
+type ThinkingConfig struct {
 	Type string `json:"type"`
 }
 
@@ -115,24 +116,16 @@ type AnthropicUsage struct {
 
 // OpenAIRequest is the body we send to {adapter.BaseURL}/chat/completions.
 type OpenAIRequest struct {
-	Model       string                  `json:"model"`
-	Messages    []OpenAIMessage         `json:"messages"`
-	MaxTokens   int                     `json:"max_tokens,omitempty"`
-	Temperature *float64                `json:"temperature,omitempty"`
-	TopP        *float64                `json:"top_p,omitempty"`
-	Stop        []string                `json:"stop,omitempty"`
-	Tools       []OpenAITool            `json:"tools,omitempty"`
-	ToolChoice  json.RawMessage         `json:"tool_choice,omitempty"`
-	Stream      bool                    `json:"stream,omitempty"`
-	Thinking    *DeepSeekThinkingConfig `json:"thinking,omitempty"`
-}
-
-// DeepSeekThinkingConfig is the thinking-mode control param on DeepSeek's
-// OpenAI-format endpoint. Stage 2.6b only ever emits {Type: "disabled"} —
-// reasoning_effort and other fields land in 2.6c when there's a code path
-// that uses them.
-type DeepSeekThinkingConfig struct {
-	Type string `json:"type"`
+	Model       string          `json:"model"`
+	Messages    []OpenAIMessage `json:"messages"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	TopP        *float64        `json:"top_p,omitempty"`
+	Stop        []string        `json:"stop,omitempty"`
+	Tools       []OpenAITool    `json:"tools,omitempty"`
+	ToolChoice  json.RawMessage `json:"tool_choice,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
+	Thinking    *ThinkingConfig `json:"thinking,omitempty"`
 }
 
 // OpenAIMessage covers system, user, assistant, and tool roles. Content is

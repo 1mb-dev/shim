@@ -69,15 +69,13 @@ func AnthropicToOpenAI(req *AnthropicRequest) (*OpenAIRequest, error) {
 		return nil, err
 	}
 
-	// Thinking control plane (Stage 2.6c). Pass req.Thinking through
-	// identity — when client omits, no thinking field on outbound (DeepSeek
-	// ignores thinking=disabled on v4-pro anyway, so the 2.6b inject was
-	// dead weight). When client sends thinking, forward it; reasoning
-	// content roundtrips via OpenAIMessage.ReasoningContent ↔ Anthropic
-	// thinking blocks (see assistantBlocksToMessages + messageToBlocks).
-	if req.Thinking != nil {
-		out.Thinking = &DeepSeekThinkingConfig{Type: req.Thinking.Type}
-	}
+	// Thinking control plane (Stage 2.6c). Pass req.Thinking through identity
+	// (same ThinkingConfig type on both sides) — when the client omits it, no
+	// thinking field on outbound (DeepSeek ignores thinking=disabled on v4-pro
+	// anyway, so the 2.6b inject was dead weight). When the client sends it,
+	// forward it; reasoning content roundtrips via OpenAIMessage.ReasoningContent
+	// ↔ Anthropic thinking blocks (see assistantBlocksToMessages + messageToBlocks).
+	out.Thinking = req.Thinking
 
 	return out, nil
 }
