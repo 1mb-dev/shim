@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -79,6 +80,47 @@ func Load(envPath string) (*Config, error) {
 	}, nil
 }
 
+// DefaultEnvPath resolves which .env file to load, in order: SHIM_ENV_FILE
+// (explicit override), ./.env (working directory — the dev workflow), then
+// <user-config>/shim/.env (so a background service started by `brew services`
+// finds its config regardless of working directory). Returns "" when none
+// exists; Load then runs from the process environment alone.
+//
+// <user-config> is $XDG_CONFIG_HOME or ~/.config — i.e. ~/.config/shim/.env.
+func DefaultEnvPath() string {
+	if v := os.Getenv("SHIM_ENV_FILE"); v != "" {
+		return v
+	}
+	if fileExists(".env") {
+		return ".env"
+	}
+	if dir := userConfigDir(); dir != "" {
+		if p := filepath.Join(dir, "shim", ".env"); fileExists(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// userConfigDir returns $XDG_CONFIG_HOME, else ~/.config. (os.UserConfigDir
+// returns ~/Library/Application Support on macOS; shim uses the cross-platform
+// ~/.config so the docs name one path on every OS.)
+func userConfigDir() string {
+	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
+		return x
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config")
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 func get(key string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -89,6 +131,9 @@ func get(key string) string {
 // loadDotEnv parses a .env file (no-op if missing) and sets entries in the
 // process env when the variable is not already set. Process env wins.
 func loadDotEnv(path string) error {
+	if path == "" {
+		return nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {

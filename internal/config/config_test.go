@@ -1,11 +1,67 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+// TestDefaultEnvPath: SHIM_ENV_FILE > ./.env > <user-config>/shim/.env > "".
+func TestDefaultEnvPath(t *testing.T) {
+	t.Run("explicit SHIM_ENV_FILE wins", func(t *testing.T) {
+		t.Setenv("SHIM_ENV_FILE", "/custom/path.env")
+		if got := DefaultEnvPath(); got != "/custom/path.env" {
+			t.Errorf("got %q, want /custom/path.env", got)
+		}
+	})
+	t.Run("cwd .env beats user config", func(t *testing.T) {
+		t.Setenv("SHIM_ENV_FILE", "")
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("X=1"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := t.TempDir()
+		mkUserEnv(t, cfg)
+		t.Setenv("XDG_CONFIG_HOME", cfg)
+		t.Chdir(dir)
+		if got := DefaultEnvPath(); got != ".env" {
+			t.Errorf("got %q, want .env", got)
+		}
+	})
+	t.Run("user config when no cwd .env", func(t *testing.T) {
+		t.Setenv("SHIM_ENV_FILE", "")
+		t.Chdir(t.TempDir())
+		cfg := t.TempDir()
+		want := mkUserEnv(t, cfg)
+		t.Setenv("XDG_CONFIG_HOME", cfg)
+		if got := DefaultEnvPath(); got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("none resolves to empty", func(t *testing.T) {
+		t.Setenv("SHIM_ENV_FILE", "")
+		t.Chdir(t.TempDir())
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+		if got := DefaultEnvPath(); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+}
+
+func mkUserEnv(t *testing.T, cfg string) string {
+	t.Helper()
+	dir := filepath.Join(cfg, "shim")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, ".env")
+	if err := os.WriteFile(p, []byte("Y=1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
 
 func TestParseDotEnv(t *testing.T) {
 	tests := []struct {

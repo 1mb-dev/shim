@@ -142,11 +142,7 @@ func buildAdapter(cfg *config.Config, log *slog.Logger) (adapter.Adapter, error)
 }
 
 func loadConfig() (*config.Config, error) {
-	envPath := ".env"
-	if v := os.Getenv("SHIM_ENV_FILE"); v != "" {
-		envPath = v
-	}
-	return config.Load(envPath)
+	return config.Load(config.DefaultEnvPath())
 }
 
 func setupLogger(cfg *config.Config) *slog.Logger {
