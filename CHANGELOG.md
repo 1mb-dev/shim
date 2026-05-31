@@ -3,6 +3,29 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.0.0] — Stable contract; first public release (2026-05-31)
+
+1.0 is a contract promise, not a feature-complete one: the Anthropic-Messages
+surface, the adapter/translator seams, the config variables, the CLI, and the
+`/v1/metrics` JSON shape are stable from here — a breaking change ships in a new
+major with a `CHANGELOG.md` note. On the translating presets, streaming is
+buffer-then-restream today (correct Anthropic SSE sequence and ordering, no
+per-token latency); live per-token streaming is the headline post-1.0 item and
+lands as a non-breaking change. anthropic-passthrough already streams live.
+
+### Added
+- `shim version` — reports the build version (set via release ldflags; `dev` for a plain `go build`).
+- CI security gates: gitleaks full-history secret scan (blocking) + govulncheck.
+- Minimal Jekyll docsite under `docs/` (landing, getting-started, configuration, measurement), plus `SECURITY.md` and `CONTRIBUTING.md`.
+
+### Changed
+- Go baseline 1.22 → 1.25 (1.22 is EOL); CI and release artifacts build with latest-stable Go for current stdlib patches.
+- `/v1/metrics` JSON shape is now part of the stable contract (was documented as "unstable until v0.1.0").
+- goreleaser: version ldflags; the `:latest` image tag is guarded against prerelease tags; Homebrew cask targets `1mb-dev/homebrew-tap`.
+
+### Docs
+- README trimmed and restructured; the metrics/errors reference moved to `docs/measurement.md`. Streaming reframed as a deliberate, post-1.0-upgradeable limitation; version/stage tags dropped from user-facing docs.
+
 ## [0.5.1] — Surgical pass: honest artifacts + loud-fail on panic (2026-05-31)
 
 A go-public-prep pass: make every artifact tell the v0.5 truth (docs/comments
