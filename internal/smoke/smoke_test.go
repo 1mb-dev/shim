@@ -114,8 +114,17 @@ func TestSmoke_LiveDeepSeek(t *testing.T) {
 	if ar.Type != "message" || ar.Role != "assistant" {
 		t.Errorf("response not Anthropic-shaped: %+v", ar)
 	}
-	if len(ar.Content) == 0 || ar.Content[0].Type != "text" || strings.TrimSpace(ar.Content[0].Text) == "" {
-		t.Errorf("empty or wrong content: %+v", ar.Content)
+	// Find the text block. A reasoning-capable upstream (DeepSeek) returns a
+	// thinking block first, so the text isn't necessarily Content[0].
+	var replyText string
+	for _, b := range ar.Content {
+		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+			replyText = strings.TrimSpace(b.Text)
+			break
+		}
+	}
+	if replyText == "" {
+		t.Errorf("no non-empty text block in content: %+v", ar.Content)
 	}
 
 	// Metrics should now reflect the call.
@@ -150,7 +159,7 @@ func TestSmoke_LiveDeepSeek(t *testing.T) {
 		t.Errorf("rewrites.model = %d, want >=1 (claude-* → deepseek-*)", snap.Rewrites["model"])
 	}
 
-	t.Logf("smoke ok — model=%s reply=%q", model, strings.TrimSpace(ar.Content[0].Text))
+	t.Logf("smoke ok — model=%s reply=%q", model, replyText)
 }
 
 // TestSmoke_LiveOllama spawns ./shim against a LOCAL Ollama (no API key) and
@@ -220,8 +229,17 @@ func TestSmoke_LiveOllama(t *testing.T) {
 	if ar.Type != "message" || ar.Role != "assistant" {
 		t.Errorf("response not Anthropic-shaped: %+v", ar)
 	}
-	if len(ar.Content) == 0 || ar.Content[0].Type != "text" || strings.TrimSpace(ar.Content[0].Text) == "" {
-		t.Errorf("empty or wrong content: %+v", ar.Content)
+	// Find the text block. A reasoning-capable upstream (DeepSeek) returns a
+	// thinking block first, so the text isn't necessarily Content[0].
+	var replyText string
+	for _, b := range ar.Content {
+		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+			replyText = strings.TrimSpace(b.Text)
+			break
+		}
+	}
+	if replyText == "" {
+		t.Errorf("no non-empty text block in content: %+v", ar.Content)
 	}
 
 	// Metrics: round-trip happened, was clean, and the model rewrite fired. Token
@@ -252,7 +270,7 @@ func TestSmoke_LiveOllama(t *testing.T) {
 		t.Errorf("rewrites.model = %d, want >=1 (claude-* → %s)", snap.Rewrites["model"], model)
 	}
 
-	t.Logf("ollama smoke ok — model=%s reply=%q", model, strings.TrimSpace(ar.Content[0].Text))
+	t.Logf("ollama smoke ok — model=%s reply=%q", model, replyText)
 }
 
 // ollamaReachable reports whether a local Ollama answers /api/tags quickly.
