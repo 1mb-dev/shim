@@ -60,6 +60,17 @@ No proxy needed.
   rows in `internal/adapter/openaichat`. Adding the next is a row — base URL,
   per-role model map, auth flag — not a new file.
 
+## Quick start
+
+```sh
+make build                            # ./shim (or: go install github.com/1mb-dev/shim/cmd/shim@latest)
+export UPSTREAM_API_KEY=<deepseek key>  # ADAPTER=deepseek by default; see Config for others
+./shim &                              # serves 127.0.0.1:8082
+ANTHROPIC_BASE_URL=http://127.0.0.1:8082 ANTHROPIC_API_KEY=shim claude
+```
+
+Then watch what it did: `curl -s localhost:8082/v1/metrics | python3 -m json.tool`.
+
 ---
 
 ## What works
