@@ -119,7 +119,7 @@ Both are community ports (not OpenAI-official), pre-1.0, single-maintainer.
 They are compile-time embedded, so the runtime supply-chain exposure is code
 vendored at build time, not fetched at startup. The token count is a
 cross-tokenizer approximation/drift signal, not a billing-grade count (see
-[Token counting](#token-counting)).
+[docs/measurement.md](docs/measurement.md#token-counting)).
 
 Binary footprint: ~14 MB per platform (darwin-arm64, linux-amd64, linux-arm64).
 The embedded tokenizer accounts for ~7 MB of that; the binary is still a
@@ -175,32 +175,19 @@ UPSTREAM_BASE_URL=https://api.anthropic.com   # default; override for a compatib
 UPSTREAM_API_KEY=<your Anthropic key>          # sent upstream as x-api-key
 ```
 
-shim does **no translation** on this path: the request body is forwarded
-byte-for-byte (so fields shim doesn't model — `metadata`, `top_k`,
-`service_tier`, … — survive), the response body is returned verbatim, and
-streaming is true Anthropic-SSE pass-through (event-by-event, live). shim
-forwards the client's `anthropic-version` / `anthropic-beta` headers when
-present and injects `2023-06-01` (logged) when absent.
+No translation on this path: the request is forwarded byte-for-byte (so fields
+shim doesn't model — `metadata`, `top_k`, … — survive), the response is returned
+verbatim, streaming is live Anthropic-SSE, and upstream errors pass through with
+their status and body unchanged (the native envelope is already correct). shim
+forwards the client's `anthropic-version` / `anthropic-beta` and injects
+`2023-06-01` (logged) when absent.
 
 The point is observability with zero translation risk: shim's redacted logs,
-`/v1/metrics`, and loud-fail measurement in front of real Claude. Because there
-is no translation, `/v1/metrics` `token_delta` here is purely a cl100k-vs-
-Anthropic tokenizer drift signal (see [Token counting](#token-counting)).
-
-If you want *only* a transparent Anthropic proxy with no measurement, you don't
-need shim — point Claude Code at the endpoint directly. shim earns its place
-when you want the measurement and loud-fail layer.
-
-Transparency covers **errors** too: on an upstream non-2xx the
-passthrough path forwards the upstream status and error body **verbatim** — the
-native-Anthropic error envelope is already correctly shaped, so re-wrapping it
-would only lose fidelity. This is the error-path analog of the response
-pass-through and is owned by the dialect (`Translator.FromUpstreamError`), so
-the request handlers stay dialect-free. The DeepSeek (translating) path still
-re-classifies the status and emits shim's own Anthropic-shaped envelope on
-error — there the upstream body is OpenAI-shaped and may carry prompt content,
-so it must not leak; its detail stays in the `upstream error` log line. See
-`docs/adr/0002-translator-seam-error-path.md`.
+`/v1/metrics`, and loud-fail in front of real Claude. `token_delta` here is a
+cl100k-vs-Anthropic drift signal, not a verification, since no translation
+happens. If you want a transparent Anthropic proxy *without* measurement, skip
+shim and point Claude Code at the endpoint directly. Seam detail:
+[ADR 0002](docs/adr/0002-translator-seam-error-path.md).
 
 ## Operational limits
 
@@ -248,11 +235,11 @@ The launcher prints a single breadcrumb line to stderr (`shim run → claude=/pa
 
 ## Measurement
 
-`GET /v1/metrics` returns a JSON snapshot of what shim has done since
-startup. Per-endpoint latency (p50/p95/p99 from a 1024-sample reservoir),
-the gap between shim's cl100k_base BPE count and the upstream's claimed
-count, how often shim rewrites requests in flight, and counters for
-total requests seen + upstream non-2xx responses.
+shim's reason to exist. `GET /v1/metrics` returns a JSON snapshot since startup:
+per-endpoint latency (p50/p95/p99), the gap between shim's cl100k_base token count
+and the upstream's claimed count, how often shim rewrote a request in flight, and
+counts of requests seen, upstream non-2xx, and recovered panics. `GET /metrics`
+serves the same aggregates in Prometheus text format.
 
 ```sh
 curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
@@ -260,219 +247,37 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
 
 ```json
 {
-    "latency": {
-        "/v1/messages": {
-            "p50": 0.316637, "p95": 0.980266, "p99": 1.585670, "n": 14
-        },
-        "/v1/messages/count_tokens": {
-            "p50": 0.046325, "p95": 0.054247, "p99": 0.054951, "n": 3
-        }
-    },
-    "token_delta": {
-        "/v1/messages": {
-            "shim_total": 86,
-            "upstream_prompt_total": 336,
-            "upstream_completion_total": 168,
-            "n": 14
-        }
-    },
-    "rewrites": {
-        "model": 14,
-        "stop_sequences": 2
-    },
-    "requests_seen": {
-        "/v1/messages": 14,
-        "/v1/messages/count_tokens": 3
-    },
-    "upstream_errors": {
-        "/v1/messages": {
-            "total": 1,
-            "class_4xx": 1,
-            "class_5xx": 0,
-            "by_status": {"400": 1}
-        }
-    },
-    "panics_total": 0
+  "latency":         {"/v1/messages": {"p50": 0.32, "p95": 0.98, "p99": 1.59, "n": 14}},
+  "token_delta":     {"/v1/messages": {"shim_total": 86, "upstream_prompt_total": 336, "n": 14}},
+  "rewrites":        {"model": 14, "stop_sequences": 2},
+  "upstream_errors": {"/v1/messages": {"total": 1, "by_status": {"400": 1}}},
+  "panics_total": 0
 }
 ```
 
-**How to read it.**
-
-- `latency.<path>.{p50,p95,p99}` — milliseconds, from the per-endpoint
-  reservoir. `n` is total observations since startup (the reservoir caps at
-  1024 samples for percentile compute; `n` keeps counting past that).
-- `token_delta.<path>.shim_total` is shim's cl100k_base BPE count of every
-  prompt's input. `upstream_prompt_total` is what the upstream reported back
-  in `usage.prompt_tokens`. The gap is the drift — under cl100k the
-  shim-side number is reproducible; the upstream may use a different
-  tokenizer (DeepSeek's is not published), so a wide gap means the two
-  tokenizers disagree on this traffic shape, not that one is wrong. If the
-  upstream omits the `usage` block, shim skips the observation rather than
-  recording zeros. For **anthropic-passthrough** the upstream *is* Anthropic, so
-  the delta compares cl100k against Anthropic's (also unpublished) tokenizer —
-  still a drift signal, not a verification of shim, since passthrough does no
-  translation.
-- `rewrites.model` counts how often shim replaced the requested model name
-  (the translating presets rewrite every claude-* request, so this tracks
-  `/v1/messages` `n`). `rewrites.stop_sequences` counts over-cap truncations.
-- `requests_seen.<path>` counts every handler entry — the denominator for
-  any ratio operators want to compute (errors per request, rewrites per
-  request, etc.). Increments before parsing or validation; counts all
-  attempts, not just successes. Only the client API endpoints
-  (`/v1/messages`, `/v1/messages/count_tokens`) record: the probe/observability
-  endpoints (`/health`, `/healthz`, `/readyz`, `/metrics`, `/v1/metrics`) and
-  the `/v1/messages/explain` dry-run are deliberately excluded so liveness
-  probes and metric scrapes don't pollute the signal.
-- `upstream_errors.<path>` counts non-2xx responses from the configured
-  upstream. `total` is all of them; `class_4xx` + `class_5xx` bucket by
-  HTTP class (3xx and oddities contribute to `total` and `by_status` only).
-  `by_status` is the per-code breakdown for drill-down. The companion
-  diagnostic — the upstream body itself — is captured on the
-  `upstream error` log line; see "Errors and debugging" below.
-- `panics_total` counts handler panics the server recovered: instead of a
-  silently dropped connection, a panic becomes an Anthropic-shaped 500, a
-  stack-bearing `handler panic recovered` log line, and this counter (thesis 2).
-  A non-zero value is always a bug to investigate.
-
-**Caveats.** The endpoint is loopback-only by default (no auth, matches
-`/health`). State is in-memory only and resets on restart. The JSON shape may
-change; breaking changes land in `CHANGELOG.md`.
-
-### Prometheus
-
-`GET /metrics` exposes the same aggregates in Prometheus text-exposition
-format, so shim can sit *in front of* Grafana/Prometheus rather than
-replace them. Hand-rolled — no `client_golang` dependency, so the binary stays
-a single static file.
-
-```text
-# HELP shim_rewrites_total Inbound-traffic mutations shim applied, by kind ...
-# TYPE shim_rewrites_total counter
-shim_rewrites_total{kind="model"} 14
-shim_upstream_errors_total{endpoint="/v1/messages",status="400"} 1
-shim_latency_seconds{endpoint="/v1/messages",quantile="0.95"} 0.980266
-```
-
-| Metric | Type | Labels | Meaning |
-|---|---|---|---|
-| `shim_requests_seen_total` | counter | `endpoint` | client requests seen |
-| `shim_rewrites_total` | counter | `kind` | inbound mutations (`model`, `stop_sequences`) |
-| `shim_upstream_errors_total` | counter | `endpoint`, `status` | upstream non-2xx |
-| `shim_tokens_shim_total` | counter | `endpoint` | shim's cl100k prompt-token count |
-| `shim_tokens_upstream_prompt_total` | counter | `endpoint` | upstream-reported prompt tokens |
-| `shim_tokens_upstream_completion_total` | counter | `endpoint` | upstream-reported completion tokens |
-| `shim_token_observations_total` | counter | `endpoint` | responses with usage recorded |
-| `shim_latency_seconds` | gauge | `endpoint`, `quantile` | latency percentile (reservoir estimate, seconds) |
-| `shim_latency_observations_total` | counter | `endpoint` | latency observations |
-| `shim_panics_total` | counter | _(none)_ | handler panics recovered (emitted only when non-zero) |
-
-Latency is a **gauge** with a `quantile` label, not a summary: the reservoir
-yields point-in-time percentiles, not histogram buckets — a gauge is the honest
-representation of what shim has. Units are seconds (Prometheus base-unit
-convention); the JSON `/v1/metrics` above reports milliseconds.
-
-### Token counting
-
-The `count_tokens` endpoint and the `token_delta.shim_total` field above
-use **cl100k_base** — OpenAI's GPT-3.5/GPT-4 BPE tokenizer, loaded via
-`pkoukk/tiktoken-go` with offline-embedded tables. shim calls
-`EncodeOrdinary` (special tokens like `<|endoftext|>` are not processed
-specially), so the count is reproducible byte-for-byte across runs for
-any given input.
-
-DeepSeek (and most non-OpenAI upstreams) don't publish their tokenizer,
-so cl100k is an **approximation across tokenizers** — close enough for
-in-session sanity checks and `/v1/metrics` drift signal, **not** a
-substitute for the upstream's own count when reconciling a bill.
-
-Response usage shape (Anthropic Messages contract) — these values come
-straight from the upstream's `usage.prompt_tokens` and
-`usage.completion_tokens`, not from shim's cl100k count:
-
-```json
-{
-  "usage": {
-    "input_tokens": 123,
-    "output_tokens": 45
-  }
-}
-```
+State is in-memory and resets on restart; both endpoints are loopback-only by
+default. The token delta is a cross-tokenizer drift signal, not a billing-grade
+count. Full field reference, the Prometheus metric table, and token-counting
+notes: [docs/measurement.md](docs/measurement.md).
 
 ## Errors and debugging
 
-When the configured upstream returns a non-2xx, shim emits a single
-`upstream error` log line at error level before writing the
-Anthropic-shaped error response to the client:
+On an upstream non-2xx, shim logs one `upstream error` line (carrying
+`upstream_status`, `resolved_model`, and a capped `body_preview` of the upstream
+body) and increments `upstream_errors` in `/v1/metrics`. The client gets an
+Anthropic-shaped error; the upstream body is logged, never echoed to the client.
 
-```json
-{
-  "level": "ERROR",
-  "msg": "upstream error",
-  "endpoint": "/v1/messages",
-  "adapter": "deepseek",
-  "upstream_status": 400,
-  "resolved_model": "deepseek-v4-pro",
-  "body_preview": "{\"error\":{\"type\":\"context_length_exceeded\",\"message\":\"...\"}}"
-}
-```
-
-The same event also increments
-`upstream_errors[/v1/messages].by_status[400]` in `/v1/metrics`. The
-metrics counter is the histogram; this log line is the per-request
-diagnostic.
-
-**Field reference.**
-
-- `upstream_status` — the actual HTTP code the upstream returned (separate
-  from shim's response status, which is the Anthropic-shaped translation).
-- `resolved_model` — the model name after `Adapter.MapModel`, i.e. what
-  shim sent to the upstream. Joinable to the prior `model rewritten` log
-  line without timestamp triangulation.
-- `body_preview` — the first 1024 bytes of the upstream response body,
-  recorded verbatim (truncated, not pretty-printed). The cap lives at
-  `upstreamBodyLogBytes` in `internal/server/handlers.go`; patch the
-  constant if you need a different value.
-
-**Upstream-echo disclosure.** The `body_preview` field is NOT routed
-through shim's key-based redactor. Its content is by definition
-operator-facing diagnostic — that's the only reason the field exists.
-Some upstreams echo a fragment of the offending request back in their
-error response (e.g. a quoted snippet of the prompt that exceeded the
-context window). On those upstreams, `body_preview` will carry that
-fragment. This is the deliberate trade-off for thesis-1 honesty at the
-boundary: an opaque "upstream status 400" tells you nothing about what
-to fix. The upstream body is never echoed to the client, only logged.
-
-If your shim deployment ships logs to a destination where upstream-echoed
-prompt content is a concern, run a downstream redactor against the
-`body_preview` field at the log sink. Shim does not pre-redact here
-because the diagnostic value depends on the verbatim form.
+`body_preview` is operator-facing diagnostic and is **not** redacted — some
+upstreams echo a prompt fragment in their error body, so redact at your log sink
+if that matters. Details: [docs/measurement.md](docs/measurement.md#errors-and-debugging).
 
 ### Thinking-block signatures
 
-Anthropic's extended-thinking blocks carry a `signature` field for
-multi-turn continuity — clients pass it back unchanged on continuations,
-and Anthropic's API verifies it server-side (HMAC-shaped, keyed by an
-internal secret that clients cannot reproduce).
-
-shim attaches a **constant** signature (`shim-passthrough-v1`) to every
-emitted thinking block and **does not verify** what clients send back.
-The design intent:
-
-- The loopback threat model (default bind `127.0.0.1:8082`) makes
-  tamper-evidence unnecessary — the only caller is the same user's
-  Claude Code.
-- DeepSeek's `reasoning_content` field has no signature concept; the
-  field is discarded on outbound translation regardless of value.
-- Anthropic clients treat the signature as opaque (they cannot verify
-  locally — only the API server has the key), so any string round-trips
-  successfully through them.
-
-This is a deliberate design choice, not an oversight. A future reader
-looking at the constant string + missing verification should NOT add
-HMAC back as "fix the gap" — it would be verification theater for a
-property no caller in the deployment model requires. If shim ever runs
-exposed beyond loopback, revisit then with a real threat model.
+shim attaches a constant `signature` (`shim-passthrough-v1`) to emitted thinking
+blocks and does not verify what clients send back: the loopback threat model makes
+tamper-evidence unnecessary, and DeepSeek discards the field. Deliberate — don't
+add HMAC back as "the missing fix" (rationale in
+[docs/measurement.md](docs/measurement.md#thinking-block-signatures)).
 
 ## Project layout
 
