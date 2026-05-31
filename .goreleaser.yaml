@@ -19,6 +19,7 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
+      - -X main.version={{ .Version }}
     goos: [darwin, linux]
     goarch: [amd64, arm64]
 
@@ -41,7 +42,9 @@ dockers_v2:
       - ghcr.io/1mb-dev/shim
     tags:
       - "{{ .Version }}"
-      - latest
+      # latest moves only on real releases — a prerelease (-rc/-beta) tag
+      # publishes its own version tag but must not poison :latest.
+      - "{{ if not .Prerelease }}latest{{ end }}"
     platforms:
       - linux/amd64
       - linux/arm64
@@ -51,14 +54,16 @@ dockers_v2:
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.licenses: MIT
 
-# Homebrew cask pushed to the existing 1mb-dev/tap repo (modern Homebrew prefers
-# casks for prebuilt binaries). Needs a PAT with write access to that repo
-# (HOMEBREW_TAP_TOKEN) — configured at the public flip. Skipped on snapshot.
+# Homebrew cask pushed to 1mb-dev/homebrew-tap (modern Homebrew prefers casks
+# for prebuilt binaries). The repo MUST be named `homebrew-tap` — Homebrew strips
+# the `homebrew-` prefix, so `brew install 1mb-dev/tap/shim` resolves there. Needs
+# a PAT with write access to it (HOMEBREW_TAP_TOKEN), configured at the public
+# flip. Skipped on snapshot.
 homebrew_casks:
   - name: shim
     repository:
       owner: 1mb-dev
-      name: tap
+      name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://github.com/1mb-dev/shim"
     description: "Glass-box Anthropic Messages API proxy — honest measurement, single static binary"
@@ -80,3 +85,6 @@ release:
   # Created as a draft: a human publishes it after a final look (extra gate on
   # top of "only runs on a tag").
   draft: true
+  # Flag -rc/-beta/-alpha SemVer tags as prereleases (pairs with the :latest
+  # guard in dockers_v2 above).
+  prerelease: auto
