@@ -54,29 +54,24 @@ dockers_v2:
       org.opencontainers.image.version: "{{ .Version }}"
       org.opencontainers.image.licenses: MIT
 
-# Homebrew cask pushed to 1mb-dev/homebrew-tap (modern Homebrew prefers casks
-# for prebuilt binaries). The repo MUST be named `homebrew-tap` — Homebrew strips
-# the `homebrew-` prefix, so `brew install 1mb-dev/tap/shim` resolves there. Needs
-# a PAT with write access to it (HOMEBREW_TAP_TOKEN), configured at the public
-# flip. Skipped on snapshot.
-homebrew_casks:
+# Homebrew FORMULA for 1mb-dev/homebrew-tap (matches the tap's existing Formula/
+# layout; `brew install 1mb-dev/tap/shim` resolves there — Homebrew strips the
+# `homebrew-` prefix). skip_upload: goreleaser WRITES the formula to dist/ but
+# does NOT push it. We open a PR to the tap instead, so no cross-repo write token
+# lives in this public repo's CI. Pushed by hand after the artifacts publish.
+brews:
   - name: shim
     repository:
       owner: 1mb-dev
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    skip_upload: "true"
     homepage: "https://github.com/1mb-dev/shim"
-    description: "Glass-box Anthropic Messages API proxy — honest measurement, single static binary"
-    url:
-      verified: "github.com/1mb-dev/shim"
-    # The binary isn't signed/notarized, so strip the macOS quarantine xattr on
-    # install or Gatekeeper blocks it.
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/shim"]
-          end
+    description: "Anthropic Messages API proxy with built-in request measurement"
+    license: "MIT"
+    install: |
+      bin.install "shim"
+    test: |
+      assert_match "shim", shell_output("#{bin}/shim version")
 
 release:
   github:

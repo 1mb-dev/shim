@@ -8,10 +8,10 @@ name: release
 #
 # Publish is INERT until the public flip. The release job is double-gated: it
 # needs a `v*` tag AND repo variable PUBLISH_ENABLED == 'true'. Enabling publish
-# is a deliberate act at go-public: (1) flip the repo public, (2) add the
-# HOMEBREW_TAP_TOKEN secret (a PAT with write access to 1mb-dev/homebrew-tap),
-# (3) set the PUBLISH_ENABLED repo variable to 'true'. Until then a stray tag
-# is a no-op — the release job is skipped.
+# is a deliberate act at go-public: (1) flip the repo public, (2) set the
+# PUBLISH_ENABLED repo variable to 'true'. The Homebrew formula is generated
+# (skip_upload) and PR'd to 1mb-dev/homebrew-tap by hand — no cross-repo token
+# in CI. Until the gate is set a stray tag is a no-op — the release job skips.
 
 on:
   push:
@@ -102,4 +102,3 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
