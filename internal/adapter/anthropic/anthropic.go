@@ -5,8 +5,8 @@
 // observability — redacted logs, /v1/metrics, loud-fail — in front of a real
 // Anthropic endpoint with zero translation risk.
 //
-// Construct via New and register from cmd/shim/main.go, mirroring the deepseek
-// adapter; no init()-time registration.
+// Construct via New and pass to server.New from cmd/shim/main.go's buildAdapter;
+// no init()-time registration.
 package anthropic
 
 import (
