@@ -436,13 +436,13 @@ func TestPresetMapModel(t *testing.T) {
 		input  string
 		want   string
 	}{
-		{"openai", "claude-opus-4-7", "gpt-5"},
-		{"openai", "claude-sonnet-4-6", "gpt-5"},
-		{"openai", "claude-haiku-4-5", "gpt-5-mini"},
-		{"openai", "", "gpt-5"},
-		{"openrouter", "claude-opus", "anthropic/claude-opus-4"},
-		{"openrouter", "claude-sonnet", "anthropic/claude-sonnet-4"},
-		{"openrouter", "claude-haiku", "anthropic/claude-3.5-haiku"},
+		{"openai", "claude-opus-4-7", "gpt-5.5"},
+		{"openai", "claude-sonnet-4-6", "gpt-5.5"},
+		{"openai", "claude-haiku-4-5", "gpt-5.4-mini"},
+		{"openai", "", "gpt-5.5"},
+		{"openrouter", "claude-opus", "anthropic/claude-opus-4.8"},
+		{"openrouter", "claude-sonnet", "anthropic/claude-sonnet-4.6"},
+		{"openrouter", "claude-haiku", "anthropic/claude-haiku-4.5"},
 		{"ollama", "claude-opus-4-7", "llama3.3"}, // empty role default → preset Default
 		{"ollama", "claude-sonnet", "llama3.3"},
 		{"ollama", "", "llama3.3"},

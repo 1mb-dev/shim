@@ -62,19 +62,20 @@ var presets = map[string]preset{
 		},
 	},
 
-	// OpenAI proper. [ASSUMPTION] chat-completions only — reasoning/"o"-series
-	// models that require the Responses API are out of scope (a different
-	// transport dialect, not this one). reasoning_content does not round-trip
-	// (OpenAI hides reasoning), so thinking blocks are a no-op here — not a bug.
-	// [ASSUMPTION] model names are sensible defaults; override via UPSTREAM_*_MODEL.
+	// OpenAI proper. Chat-completions only — reasoning/"o"-series models that
+	// require the Responses API are out of scope (a different transport dialect).
+	// reasoning_content does not round-trip (OpenAI hides reasoning), so thinking
+	// blocks are a no-op here — not a bug. Model IDs verified 2026-05; they drift
+	// with releases — override per role via UPSTREAM_*_MODEL (e.g. set sonnet to
+	// gpt-5.4-mini to trade capability for cost).
 	"openai": {
 		defaultBaseURL: "https://api.openai.com/v1",
 		authRequired:   true,
 		models: roleModels{
-			Opus:    "gpt-5",
-			Sonnet:  "gpt-5",
-			Haiku:   "gpt-5-mini",
-			Default: "gpt-5",
+			Opus:    "gpt-5.5",
+			Sonnet:  "gpt-5.5",
+			Haiku:   "gpt-5.4-mini",
+			Default: "gpt-5.5",
 		},
 	},
 
@@ -82,23 +83,22 @@ var presets = map[string]preset{
 	// Anthropic via OpenRouter (preserves the caller's model intent). NOTE:
 	// double-translation (Anthropic→OpenAI→OpenRouter→provider) — shim measures
 	// only its own hop. No attribution headers injected by default (extraHeaders
-	// nil); an operator can add HTTP-Referer/X-Title via a future config if wanted.
-	// [ASSUMPTION] default model names; override via UPSTREAM_*_MODEL.
+	// nil). Slugs verified 2026-05; they drift — override via UPSTREAM_*_MODEL.
 	"openrouter": {
 		defaultBaseURL: "https://openrouter.ai/api/v1",
 		authRequired:   true,
 		models: roleModels{
-			Opus:    "anthropic/claude-opus-4",
-			Sonnet:  "anthropic/claude-sonnet-4",
-			Haiku:   "anthropic/claude-3.5-haiku",
-			Default: "anthropic/claude-sonnet-4",
+			Opus:    "anthropic/claude-opus-4.8",
+			Sonnet:  "anthropic/claude-sonnet-4.6",
+			Haiku:   "anthropic/claude-haiku-4.5",
+			Default: "anthropic/claude-sonnet-4.6",
 		},
 	},
 
 	// Ollama local (OpenAI-compatible endpoint). No auth required — Validate
 	// passes keyless; an optional key is still forwarded if set (proxy setups).
 	// One local model serves all roles via the empty-role-default fall-through.
-	// [ASSUMPTION] Default model; override via UPSTREAM_MODEL.
+	// Default llama3.3; override via UPSTREAM_MODEL (e.g. qwen2.5-coder for coding).
 	"ollama": {
 		defaultBaseURL: "http://localhost:11434/v1",
 		authRequired:   false,
