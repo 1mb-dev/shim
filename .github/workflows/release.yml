@@ -44,7 +44,9 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          # Build with latest-stable Go (not the go.mod floor) so published
+          # artifacts + the govulncheck gate get current stdlib security patches.
+          go-version: stable
           check-latest: true
       - run: go test -race ./...
       - uses: golangci/golangci-lint-action@v9
@@ -82,7 +84,9 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          # Build with latest-stable Go (not the go.mod floor) so published
+          # artifacts + the govulncheck gate get current stdlib security patches.
+          go-version: stable
           check-latest: true
       - run: go test -race ./...
       - uses: docker/setup-qemu-action@v4
