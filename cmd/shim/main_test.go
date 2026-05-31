@@ -32,3 +32,33 @@ func TestBuildAdapter_AnthropicNoDeepseekMisroute(t *testing.T) {
 		t.Fatalf("misroute: anthropic traffic routed to deepseek host %q", req.URL.Host)
 	}
 }
+
+// TestBuildAdapter_OpenAIDialectPreset covers the default→openaichat branch of
+// buildAdapter (the anthropic test covers the other branch): a preset name
+// resolves to an openaichat adapter at the preset's own base URL.
+func TestBuildAdapter_OpenAIDialectPreset(t *testing.T) {
+	cfg := &config.Config{Adapter: "deepseek", UpstreamAPIKey: "k"}
+	a, err := buildAdapter(cfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Name() != "deepseek" {
+		t.Errorf("name = %q, want deepseek", a.Name())
+	}
+	req, err := a.BuildRequest(context.Background(), []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.URL.Host != "api.deepseek.com" {
+		t.Errorf("host = %q, want api.deepseek.com", req.URL.Host)
+	}
+}
+
+// TestBuildAdapter_Unknown: an unknown ADAPTER fails loudly (the loud-fail the
+// removed registry once owned now lives in openaichat.New, surfaced here).
+func TestBuildAdapter_Unknown(t *testing.T) {
+	cfg := &config.Config{Adapter: "ghost", UpstreamAPIKey: "k"}
+	if _, err := buildAdapter(cfg, slog.Default()); err == nil {
+		t.Fatal("expected error for unknown ADAPTER, got nil")
+	}
+}
