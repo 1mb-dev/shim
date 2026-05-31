@@ -161,20 +161,6 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-func TestBuildRequest_NotConfigured(t *testing.T) {
-	a := &impl{} // empty baseURL
-	if _, err := a.BuildRequest(context.Background(), []byte(`{}`)); err == nil {
-		t.Fatal("expected error for unconfigured adapter")
-	}
-}
-
-func TestBuildRequest_NoAPIKey(t *testing.T) {
-	a := testAdapter("https://x", "")
-	if _, err := a.BuildRequest(context.Background(), []byte(`{}`)); err == nil {
-		t.Fatal("expected error for missing API key")
-	}
-}
-
 func TestNormalizeResponse_OK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -88,9 +88,7 @@ func (a *impl) Validate() error {
 // the context via adapter.InboundHeaders); when anthropic-version is absent it
 // injects DefaultAnthropicVersion and logs the inject.
 func (a *impl) BuildRequest(ctx context.Context, body []byte) (*http.Request, error) {
-	if a.apiKey == "" {
-		return nil, fmt.Errorf("anthropic: UPSTREAM_API_KEY not set")
-	}
+	// apiKey is present — Validate gated it at startup (the single auth gate).
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: build request: %w", err)

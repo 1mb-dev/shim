@@ -247,12 +247,8 @@ func (a *impl) Validate() error {
 // API key is present (a no-auth preset like Ollama still accepts an optional
 // key behind a proxy); extraHeaders (usually nil) are applied last.
 func (a *impl) BuildRequest(ctx context.Context, body []byte) (*http.Request, error) {
-	if a.baseURL == "" {
-		return nil, fmt.Errorf("%s: not configured (call New first)", a.name)
-	}
-	if a.authRequired && a.apiKey == "" {
-		return nil, fmt.Errorf("%s: UPSTREAM_API_KEY not set", a.name)
-	}
+	// Config invariants hold here: New always sets baseURL, and Validate gated
+	// the key at startup (the single auth gate). No re-check — see Validate.
 	url := a.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
