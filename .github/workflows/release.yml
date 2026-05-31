@@ -9,7 +9,7 @@ name: release
 # Publish is INERT until the public flip. The release job is double-gated: it
 # needs a `v*` tag AND repo variable PUBLISH_ENABLED == 'true'. Enabling publish
 # is a deliberate act at go-public: (1) flip the repo public, (2) add the
-# HOMEBREW_TAP_TOKEN secret (a PAT with write access to 1mb-dev/tap),
+# HOMEBREW_TAP_TOKEN secret (a PAT with write access to 1mb-dev/homebrew-tap),
 # (3) set the PUBLISH_ENABLED repo variable to 'true'. Until then a stray tag
 # is a no-op — the release job is skipped.
 
@@ -50,6 +50,14 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2 # match the local toolchain; v9 supports the v2 config
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      - name: gitleaks (full-history secret scan)
+        run: |
+          go install github.com/gitleaks/gitleaks/v8@v8.30.1
+          gitleaks git . --log-opts="--all" --redact --no-banner
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - uses: goreleaser/goreleaser-action@v7
