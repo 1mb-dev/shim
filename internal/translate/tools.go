@@ -5,12 +5,11 @@ import (
 	"fmt"
 )
 
-// Tools-related translation. Step 5 owns the matrix + roundtrip tests; the
-// helpers here are the surface step 4 needs to compile and round-trip happy
-// paths through the core. Stub-flagged helpers will be filled in step 5.
+// Tools-related translation: the Anthropic tools[]/tool_choice → OpenAI
+// mapping and back.
 
 // wireTools attaches the OpenAI-shaped tools[] and tool_choice fields from
-// an Anthropic request. Implemented in full at step 5.
+// an Anthropic request.
 func wireTools(in *AnthropicRequest, out *OpenAIRequest) error {
 	if len(in.Tools) > 0 {
 		out.Tools = make([]OpenAITool, 0, len(in.Tools))
@@ -38,8 +37,8 @@ func wireTools(in *AnthropicRequest, out *OpenAIRequest) error {
 	return nil
 }
 
-// mapToolChoice — full matrix implementation lands in step 5. Stub passes
-// through valid {"type":"auto|any|none"} or {"type":"tool","name":"..."}.
+// mapToolChoice passes through valid {"type":"auto|any|none"} or
+// {"type":"tool","name":"..."} as the OpenAI-shaped tool_choice.
 func mapToolChoice(raw json.RawMessage) (json.RawMessage, error) {
 	var probe struct {
 		Type string `json:"type"`

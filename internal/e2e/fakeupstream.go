@@ -96,21 +96,12 @@ func (f *FakeUpstream) SetNext(r CannedResponse) {
 	f.next = &r
 }
 
-// EnforceToolContinuationContract turns on a proxy for DeepSeek's actual
-// rule that "thinking active on prior turn → reasoning_content required
-// on continuation when prior turn made tool_calls." Real DeepSeek returns
-// the canonical 400 below when this rule fires; the fake mimics it when:
-// the request body contains tool_calls in any assistant message in
-// `messages` AND the request did NOT explicitly set
-// thinking={type:"disabled"}.
-//
-// This is a PROXY for the real contract, not a faithful model — DeepSeek
-// actually checks whether reasoning_content was present on the prior
-// assistant turn that made tool_calls. The proxy collapses that to
-// "thinking is not disabled" because Stage 2.6b's whole job is to ensure
-// shim sends thinking=disabled on every outbound, which sidesteps the
-// real contract entirely. If you ever need to test the real contract
-// (Stage 2.6c), reshape this enforcement.
+// EnforceToolContinuationContract toggles a fake of DeepSeek's rule that a
+// thinking-mode turn which made tool_calls must carry reasoning_content back
+// on the continuation, or the upstream returns the canonical 400 below. When
+// on, handle() applies violatesToolContinuationContract (which models the
+// 2.6c rule — see its doc) and 400s on a violation. Off by default, so most
+// cases see normal responses.
 func (f *FakeUpstream) EnforceToolContinuationContract(on bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

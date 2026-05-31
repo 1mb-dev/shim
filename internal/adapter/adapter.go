@@ -1,16 +1,16 @@
-// Package adapter defines the contract every upstream provider satisfies and
-// a registry that lets the server look adapters up by name.
+// Package adapter defines the contract every upstream provider satisfies, plus
+// the small shared helpers around it (ReadNormalizedResponse, the
+// InboundHeaders context helper).
 //
-// Adding a new provider is a single self-contained sub-package:
+// Two ways to add a provider, by transport dialect:
+//   - An OpenAI-dialect provider is a DATA row in internal/adapter/openaichat's
+//     preset registry (base URL + per-role model map + auth flag) — no new file.
+//   - A genuinely new dialect (not OpenAI-chat, not native Anthropic) is a
+//     self-contained sub-package implementing Adapter, including Translator()
+//     for its dialect.
 //
-//	package myprovider
-//	import "github.com/1mb-dev/shim/internal/adapter"
-//
-//	func New(opts Opts) (adapter.Adapter, error) { ... }
-//
-// cmd/shim/main.go constructs the adapter via its New, then calls
-// adapter.Register with the returned instance — no init()-time
-// registration, no blank-import side effects.
+// cmd/shim/main.go's registerAdapter constructs the adapter — one branch per
+// dialect, no init()-time registration, no blank-import side effects.
 package adapter
 
 import (
@@ -24,11 +24,11 @@ import (
 )
 
 // Adapter binds shim to one upstream provider across two axes: the transport
-// dialect (which Translator it returns — OpenAI-ChatCompletions for DeepSeek,
-// identity for anthropic-passthrough) and provider quirks (model-name format,
-// auth/header peculiarities, response envelopes). The Translator handles the
-// dialect; everything provider-specific lives INSIDE the adapter. The
-// translator stays pure.
+// dialect (which Translator it returns — OpenAI-ChatCompletions for the
+// openaichat presets, identity for anthropic-passthrough) and provider quirks
+// (model-name format, auth/header peculiarities, response envelopes). The
+// Translator handles the dialect; everything provider-specific lives INSIDE
+// the adapter. The translator stays pure.
 //
 // BuildRequest wraps the translator's already-built upstream body in an
 // http.Request bound to the provider's endpoint; NormalizeResponse reads the
@@ -40,8 +40,7 @@ type Adapter interface {
 	// MapModel converts an Anthropic-style model name (which may be e.g.
 	// "claude-3-5-sonnet-20240620") into the upstream's expected name.
 	// Adapters handle the empty-input case themselves — typically by
-	// returning a "default" model — so callers never need a separate
-	// DefaultModel() probe.
+	// returning a "default" model.
 	MapModel(anthropicModel string) string
 
 	// Validate confirms the adapter has all configuration it needs to serve

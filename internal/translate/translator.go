@@ -23,8 +23,8 @@ const maxStopSequences = 4
 
 // Translator converts between the Anthropic Messages wire format and one
 // upstream transport dialect. shim supports two dialects: OpenAI
-// ChatCompletions (DeepSeek, OpenAI — see AnthropicOpenAI) and identity
-// (anthropic-passthrough — defined in the passthrough adapter).
+// ChatCompletions (the openaichat preset family — see AnthropicOpenAI) and
+// identity (anthropic-passthrough — defined in the passthrough adapter).
 //
 // Implementations are pure for request/response (no client I/O, no config,
 // no state). StreamChunks reads the upstream response body (input) but never

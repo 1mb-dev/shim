@@ -1,5 +1,5 @@
-// Package server wires the HTTP routes for shim's three Stage 0 endpoints
-// and owns the per-request translation flow.
+// Package server wires shim's HTTP routes and owns the per-request
+// translation flow.
 package server
 
 import (
