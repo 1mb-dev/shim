@@ -1185,6 +1185,36 @@ func TestRecoverPanics(t *testing.T) {
 	}
 }
 
+// TestRecoverPanics_AfterCommit: a panic AFTER the response is committed (e.g.
+// mid-stream) must NOT splice a 500 envelope onto the live body — status stays,
+// body is uncorrupted — but the panic is still counted + logged.
+func TestRecoverPanics_AfterCommit(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, logBuf := newTestServer(t, s)
+
+	h := srv.recoverPanics(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial"))
+		panic("mid-write boom")
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (already committed, not overwritten)", rec.Code)
+	}
+	if rec.Body.String() != "partial" {
+		t.Errorf("body = %q, want 'partial' with no appended error envelope", rec.Body.String())
+	}
+	if got := srv.measure.Snapshot().Panics; got != 1 {
+		t.Errorf("panics metric = %d, want 1 (still recorded)", got)
+	}
+	if !strings.Contains(logBuf.String(), "handler panic recovered") {
+		t.Errorf("expected panic log even after commit; got: %s", logBuf.String())
+	}
+}
+
 // TestNew_HTTPClientTuning: fences the Stage 2 transport-tuning values so
 // regressions (or future "let's simplify the client" cleanups) surface as
 // failed tests rather than silent perf drift.

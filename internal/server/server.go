@@ -81,11 +81,15 @@ func New(cfg *config.Config, log *slog.Logger, a adapter.Adapter) (*Server, erro
 // 500 (Anthropic-shaped) plus a recorded metric and a stack-bearing log line,
 // instead of a silently dropped connection (thesis 2: never fail silently).
 // Transport-level — no dialect knowledge, no body inspection — so the locked
-// translator seam is untouched and both dialects share it. Best-effort: if a
-// handler already wrote a partial response before panicking, the 500 write is
-// superfluous, but the log + metric still fire.
+// translator seam is untouched and both dialects share it.
+//
+// The 500 is synthesized only when nothing has been sent yet. A mid-response
+// panic (e.g. mid-SSE-stream, after a 200 + partial body) has already committed
+// the response; appending an error envelope would corrupt it (splice non-SSE
+// bytes into a live stream) — there the log + metric are the only honest signal.
 func (s *Server) recoverPanics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cw := &committedWriter{ResponseWriter: w}
 		defer func() {
 			if rec := recover(); rec != nil {
 				s.measure.RecordPanic()
@@ -94,11 +98,39 @@ func (s *Server) recoverPanics(next http.Handler) http.Handler {
 					slog.String("path", r.URL.Path),
 					slog.String("stack", string(debug.Stack())),
 				)
-				writeError(w, s.log, http.StatusInternalServerError, errAPI, "internal error")
+				if !cw.committed {
+					writeError(w, s.log, http.StatusInternalServerError, errAPI, "internal error")
+				}
 			}
 		}()
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(cw, r)
 	})
+}
+
+// committedWriter tracks whether the response has been committed (status or body
+// written) so recoverPanics can tell a pre-write panic (safe to synthesize a
+// 500) from a mid-write one (writing would corrupt the committed response). It
+// forwards Flush so the streaming path still gets its http.Flusher through the
+// wrapper.
+type committedWriter struct {
+	http.ResponseWriter
+	committed bool
+}
+
+func (w *committedWriter) WriteHeader(code int) {
+	w.committed = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *committedWriter) Write(b []byte) (int, error) {
+	w.committed = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *committedWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // Addr returns the bind address the server will listen on.
