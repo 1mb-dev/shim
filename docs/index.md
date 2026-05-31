@@ -15,7 +15,9 @@ shim would send before a request leaves the box.
 ## Install
 
 ```sh
-go install github.com/1mb-dev/shim/cmd/shim@latest
+brew install 1mb-dev/tap/shim
+# or: go install github.com/1mb-dev/shim/cmd/shim@latest
+# or: docker pull ghcr.io/1mb-dev/shim
 ```
 
 ## Quick start
