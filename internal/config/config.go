@@ -36,13 +36,10 @@ var defaults = map[string]string{
 	"BIND_ADDR":         "127.0.0.1",
 	"PORT":              "8082",
 	"ADAPTER":           "deepseek",
-	"UPSTREAM_BASE_URL": "https://api.deepseek.com/v1",
 	"LOG_LEVEL":         "info",
 	"LOG_REDACT":        "true",
 	"MAX_REQUEST_BYTES": "1048576",
 }
-
-var required = []string{"UPSTREAM_API_KEY"}
 
 // Load reads a .env file (if present) into the process environment, then
 // constructs a Config. Existing process env always wins over .env entries.
@@ -50,11 +47,8 @@ func Load(envPath string) (*Config, error) {
 	if err := loadDotEnv(envPath); err != nil {
 		return nil, fmt.Errorf("load .env: %w", err)
 	}
-	for _, k := range required {
-		if strings.TrimSpace(os.Getenv(k)) == "" {
-			return nil, fmt.Errorf("%s not set in %s or process env", k, envPath)
-		}
-	}
+	// Auth requirement is enforced per-adapter by Adapter.Validate at server
+	// startup (a no-auth preset like Ollama needs no key), not globally here.
 
 	port, err := strconv.Atoi(get("PORT"))
 	if err != nil {
@@ -74,7 +68,7 @@ func Load(envPath string) (*Config, error) {
 		Port:                port,
 		Adapter:             get("ADAPTER"),
 		UpstreamAPIKey:      os.Getenv("UPSTREAM_API_KEY"),
-		UpstreamBaseURL:     get("UPSTREAM_BASE_URL"),
+		UpstreamBaseURL:     os.Getenv("UPSTREAM_BASE_URL"), // empty ⇒ adapter/preset supplies its default
 		UpstreamModel:       os.Getenv("UPSTREAM_MODEL"),
 		UpstreamOpusModel:   os.Getenv("UPSTREAM_OPUS_MODEL"),
 		UpstreamSonnetModel: os.Getenv("UPSTREAM_SONNET_MODEL"),

@@ -428,6 +428,64 @@ func TestPresets_Invariants(t *testing.T) {
 	}
 }
 
+// TestPresetMapModel covers the per-provider default mappings added in P2,
+// including Ollama's empty-role-default fall-through to the preset Default.
+func TestPresetMapModel(t *testing.T) {
+	cases := []struct {
+		preset string
+		input  string
+		want   string
+	}{
+		{"openai", "claude-opus-4-7", "gpt-5"},
+		{"openai", "claude-sonnet-4-6", "gpt-5"},
+		{"openai", "claude-haiku-4-5", "gpt-5-mini"},
+		{"openai", "", "gpt-5"},
+		{"openrouter", "claude-opus", "anthropic/claude-opus-4"},
+		{"openrouter", "claude-sonnet", "anthropic/claude-sonnet-4"},
+		{"openrouter", "claude-haiku", "anthropic/claude-3.5-haiku"},
+		{"ollama", "claude-opus-4-7", "llama3.3"}, // empty role default → preset Default
+		{"ollama", "claude-sonnet", "llama3.3"},
+		{"ollama", "", "llama3.3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.preset+"/"+tc.input, func(t *testing.T) {
+			a, err := New(tc.preset, Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := a.MapModel(tc.input); got != tc.want {
+				t.Errorf("%s MapModel(%q) = %q, want %q", tc.preset, tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPresetMapModel_OllamaOverride: with an empty role default, the
+// UPSTREAM_MODEL catch-all wins for a claude-* role before the preset Default,
+// but an explicit role override (UPSTREAM_OPUS_MODEL) still beats the catch-all.
+func TestPresetMapModel_OllamaOverride(t *testing.T) {
+	a, _ := New("ollama", Config{ModelOverride: "qwen2.5-coder"})
+	if got := a.MapModel("claude-opus"); got != "qwen2.5-coder" {
+		t.Errorf("ollama claude-opus with UPSTREAM_MODEL = %q, want qwen2.5-coder", got)
+	}
+	a, _ = New("ollama", Config{ModelOverride: "qwen2.5-coder", OpusModel: "deepseek-r1"})
+	if got := a.MapModel("claude-opus"); got != "deepseek-r1" {
+		t.Errorf("ollama claude-opus with role override = %q, want deepseek-r1", got)
+	}
+}
+
+// TestPresetAuth: openai requires a key (authRequired); ollama does not.
+func TestPresetAuth(t *testing.T) {
+	oai, _ := New("openai", Config{}) // no key
+	if err := oai.Validate(); err == nil {
+		t.Error("openai Validate should fail without a key")
+	}
+	olm, _ := New("ollama", Config{}) // no key
+	if err := olm.Validate(); err != nil {
+		t.Errorf("ollama Validate should pass keyless, got %v", err)
+	}
+}
+
 // --- helpers ---
 
 func loadFixture(t *testing.T, name string) []byte {

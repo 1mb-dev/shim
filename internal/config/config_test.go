@@ -75,14 +75,12 @@ func TestParseDotEnv(t *testing.T) {
 	}
 }
 
-func TestLoadMissingRequired(t *testing.T) {
+func TestLoadMissingKeyAllowed(t *testing.T) {
+	// UPSTREAM_API_KEY is no longer globally required — auth is gated per-adapter
+	// at Adapter.Validate (a no-auth preset like Ollama starts keyless).
 	t.Setenv("UPSTREAM_API_KEY", "")
-	_, err := Load(filepath.Join(t.TempDir(), "nonexistent.env"))
-	if err == nil {
-		t.Fatal("expected error for missing UPSTREAM_API_KEY")
-	}
-	if !strings.Contains(err.Error(), "UPSTREAM_API_KEY") {
-		t.Errorf("error did not name the missing var: %v", err)
+	if _, err := Load(filepath.Join(t.TempDir(), "nonexistent.env")); err != nil {
+		t.Fatalf("Load should succeed without UPSTREAM_API_KEY, got %v", err)
 	}
 }
 
@@ -99,7 +97,7 @@ func TestLoadDefaults(t *testing.T) {
 		"BindAddr":            "127.0.0.1",
 		"Port":                8082,
 		"Adapter":             "deepseek",
-		"UpstreamBaseURL":     "https://api.deepseek.com/v1",
+		"UpstreamBaseURL":     "", // no global default; preset supplies it by ADAPTER name
 		"UpstreamModel":       "",
 		"UpstreamOpusModel":   "",
 		"UpstreamSonnetModel": "",

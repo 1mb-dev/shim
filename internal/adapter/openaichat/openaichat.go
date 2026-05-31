@@ -61,6 +61,51 @@ var presets = map[string]preset{
 			Default: "deepseek-chat",
 		},
 	},
+
+	// OpenAI proper. [ASSUMPTION] chat-completions only — reasoning/"o"-series
+	// models that require the Responses API are out of scope (a different
+	// transport dialect, not this one). reasoning_content does not round-trip
+	// (OpenAI hides reasoning), so thinking blocks are a no-op here — not a bug.
+	// [ASSUMPTION] model names are sensible defaults; override via UPSTREAM_*_MODEL.
+	"openai": {
+		defaultBaseURL: "https://api.openai.com/v1",
+		authRequired:   true,
+		models: roleModels{
+			Opus:    "gpt-5",
+			Sonnet:  "gpt-5",
+			Haiku:   "gpt-5-mini",
+			Default: "gpt-5",
+		},
+	},
+
+	// OpenRouter — one key, many providers. Defaults route claude-* back to
+	// Anthropic via OpenRouter (preserves the caller's model intent). NOTE:
+	// double-translation (Anthropic→OpenAI→OpenRouter→provider) — shim measures
+	// only its own hop. No attribution headers injected by default (extraHeaders
+	// nil); an operator can add HTTP-Referer/X-Title via a future config if wanted.
+	// [ASSUMPTION] default model names; override via UPSTREAM_*_MODEL.
+	"openrouter": {
+		defaultBaseURL: "https://openrouter.ai/api/v1",
+		authRequired:   true,
+		models: roleModels{
+			Opus:    "anthropic/claude-opus-4",
+			Sonnet:  "anthropic/claude-sonnet-4",
+			Haiku:   "anthropic/claude-3.5-haiku",
+			Default: "anthropic/claude-sonnet-4",
+		},
+	},
+
+	// Ollama local (OpenAI-compatible endpoint). No auth required — Validate
+	// passes keyless; an optional key is still forwarded if set (proxy setups).
+	// One local model serves all roles via the empty-role-default fall-through.
+	// [ASSUMPTION] Default model; override via UPSTREAM_MODEL.
+	"ollama": {
+		defaultBaseURL: "http://localhost:11434/v1",
+		authRequired:   false,
+		models: roleModels{
+			Default: "llama3.3",
+		},
+	},
 }
 
 // Config carries the runtime/env configuration that overrides a preset's

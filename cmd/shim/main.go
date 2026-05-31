@@ -99,19 +99,6 @@ func runServer() error {
 // Unknown values fail loudly rather than falling back silently (thesis-2).
 func registerAdapter(cfg *config.Config, log *slog.Logger) error {
 	switch cfg.Adapter {
-	case "deepseek":
-		a, err := openaichat.New("deepseek", openaichat.Config{
-			BaseURL:       cfg.UpstreamBaseURL,
-			APIKey:        cfg.UpstreamAPIKey,
-			ModelOverride: cfg.UpstreamModel,
-			OpusModel:     cfg.UpstreamOpusModel,
-			SonnetModel:   cfg.UpstreamSonnetModel,
-			HaikuModel:    cfg.UpstreamHaikuModel,
-		})
-		if err != nil {
-			return fmt.Errorf("deepseek adapter: %w", err)
-		}
-		adapter.Register(a)
 	case anthropic.Name:
 		a, err := anthropic.New(anthropic.ConfigureOpts{
 			BaseURL: cfg.UpstreamBaseURL,
@@ -123,7 +110,21 @@ func registerAdapter(cfg *config.Config, log *slog.Logger) error {
 		}
 		adapter.Register(a)
 	default:
-		return fmt.Errorf("unknown ADAPTER %q (valid: %q, %q)", cfg.Adapter, "deepseek", anthropic.Name)
+		// Every OpenAI-ChatCompletions provider is a preset row; unknown names
+		// fail loudly from openaichat.New (it lists valid presets). One branch
+		// per transport dialect, not per provider.
+		a, err := openaichat.New(cfg.Adapter, openaichat.Config{
+			BaseURL:       cfg.UpstreamBaseURL,
+			APIKey:        cfg.UpstreamAPIKey,
+			ModelOverride: cfg.UpstreamModel,
+			OpusModel:     cfg.UpstreamOpusModel,
+			SonnetModel:   cfg.UpstreamSonnetModel,
+			HaikuModel:    cfg.UpstreamHaikuModel,
+		})
+		if err != nil {
+			return fmt.Errorf("%w; or ADAPTER=%q", err, anthropic.Name)
+		}
+		adapter.Register(a)
 	}
 	return nil
 }
