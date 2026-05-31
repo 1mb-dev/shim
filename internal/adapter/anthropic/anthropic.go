@@ -46,9 +46,8 @@ type ConfigureOpts struct {
 	Logger  *slog.Logger // for the version-inject loud-fail line
 }
 
-// New constructs a configured passthrough adapter. Caller registers the
-// returned adapter via adapter.Register. The config gate is Validate at
-// server startup.
+// New constructs a configured passthrough adapter. The caller passes the
+// returned adapter to server.New; the config gate is Validate at server startup.
 func New(opts ConfigureOpts) (adapter.Adapter, error) {
 	baseURL := opts.BaseURL
 	if baseURL == "" {

@@ -10,21 +10,18 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/1mb-dev/shim/internal/adapter"
 	"github.com/1mb-dev/shim/internal/config"
 	"github.com/1mb-dev/shim/internal/measure"
 	"github.com/1mb-dev/shim/internal/translate"
 )
 
-// stub is an Adapter test double the server can drive without DeepSeek.
-// Each instance gets a unique name so the global registry doesn't collide
-// across tests.
+// stub is an Adapter test double the server can drive without a real upstream.
+// Passed directly to New — no global registration.
 type stub struct {
 	mu              sync.Mutex
 	name            string
@@ -35,11 +32,8 @@ type stub struct {
 	translator      translate.Translator // when nil, defaults to AnthropicOpenAI()
 }
 
-var stubCounter int
-
 func newStub() *stub {
-	stubCounter++
-	s := &stub{name: "stub-" + strconv.Itoa(stubCounter)}
+	s := &stub{name: "stub"}
 	s.upstreamHandler = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -249,7 +243,6 @@ func (f *failAfterNFlushWriter) Write(b []byte) (int, error) {
 
 func newTestServer(t *testing.T, s *stub) (*Server, *bytes.Buffer) {
 	t.Helper()
-	adapter.Register(s) // unique name per stub; no collision
 	logBuf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg := &config.Config{
@@ -259,7 +252,7 @@ func newTestServer(t *testing.T, s *stub) (*Server, *bytes.Buffer) {
 		UpstreamAPIKey:  "sk-test",
 		MaxRequestBytes: 4096,
 	}
-	srv, err := New(cfg, log)
+	srv, err := New(cfg, log, s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +529,6 @@ func TestNew_AdapterValidateFails(t *testing.T) {
 	s := newStub()
 	s.missingKey = true
 	defer s.close()
-	adapter.Register(s)
 	logBuf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(logBuf, nil))
 	cfg := &config.Config{
@@ -546,7 +538,7 @@ func TestNew_AdapterValidateFails(t *testing.T) {
 		UpstreamAPIKey:  "",
 		MaxRequestBytes: 4096,
 	}
-	_, err := New(cfg, log)
+	_, err := New(cfg, log, s)
 	if err == nil {
 		t.Fatal("expected error from New when adapter fails Validate, got nil")
 	}
@@ -1069,7 +1061,6 @@ func TestStartShutdown(t *testing.T) {
 	port := probe.Addr().(*net.TCPAddr).Port
 	probe.Close()
 
-	adapter.Register(s)
 	logBuf := &bytes.Buffer{}
 	log := slog.New(slog.NewJSONHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg := &config.Config{
@@ -1079,7 +1070,7 @@ func TestStartShutdown(t *testing.T) {
 		UpstreamAPIKey:  "sk-test",
 		MaxRequestBytes: 4096,
 	}
-	srv, err := New(cfg, log)
+	srv, err := New(cfg, log, s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1122,15 +1113,6 @@ func TestStartShutdown(t *testing.T) {
 
 	if !strings.Contains(logBuf.String(), "shim listening") {
 		t.Errorf("expected 'shim listening' log; got: %s", logBuf.String())
-	}
-}
-
-func TestNew_UnknownAdapter(t *testing.T) {
-	cfg := &config.Config{Adapter: "ghost", Port: 1, BindAddr: "127.0.0.1"}
-	logBuf := &bytes.Buffer{}
-	log := slog.New(slog.NewJSONHandler(logBuf, nil))
-	if _, err := New(cfg, log); err == nil {
-		t.Fatal("expected error for unknown adapter")
 	}
 }
 

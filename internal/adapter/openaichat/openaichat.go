@@ -7,7 +7,7 @@
 // Usage: cmd/shim/main.go resolves the ADAPTER name to a preset:
 //
 //	a, err := openaichat.New("deepseek", openaichat.Config{APIKey: key})
-//	adapter.Register(a)
+//	srv, err := server.New(cfg, log, a)
 //
 // The Translator is the canonical anthropic↔openai one for every preset; the
 // dialect lives in translate, the provider quirks live in the row.

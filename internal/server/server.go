@@ -29,18 +29,12 @@ type Server struct {
 	measure *measure.Collector
 }
 
-// New constructs a Server. The adapter must already be registered
-// (cmd/shim/main.go constructs the adapter via its New and calls
-// adapter.Register). Adapter.Validate() runs once here; misconfiguration
-// fails startup loudly rather than the first request.
-func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
-	a, ok := adapter.Get(cfg.Adapter)
-	if !ok {
-		return nil, fmt.Errorf("adapter %q not registered (available: %v)", cfg.Adapter, adapter.Names())
-	}
-
+// New constructs a Server bound to the given adapter (cmd/shim/main.go builds
+// it via buildAdapter). Adapter.Validate() runs once here — the single config
+// gate; misconfiguration fails startup loudly rather than the first request.
+func New(cfg *config.Config, log *slog.Logger, a adapter.Adapter) (*Server, error) {
 	if err := a.Validate(); err != nil {
-		return nil, fmt.Errorf("adapter %q validation failed: %w", cfg.Adapter, err)
+		return nil, fmt.Errorf("adapter %q validation failed: %w", a.Name(), err)
 	}
 
 	// Load cl100k_base BPE up front so a corrupt embed blocks startup

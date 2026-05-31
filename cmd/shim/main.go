@@ -66,11 +66,12 @@ func runServer() error {
 	}
 
 	log := setupLogger(cfg)
-	if err := registerAdapter(cfg, log); err != nil {
+	a, err := buildAdapter(cfg, log)
+	if err != nil {
 		return err
 	}
 
-	srv, err := server.New(cfg, log)
+	srv, err := server.New(cfg, log, a)
 	if err != nil {
 		return err
 	}
@@ -95,9 +96,10 @@ func runServer() error {
 	}
 }
 
-// registerAdapter constructs and registers the adapter selected by ADAPTER.
-// Unknown values fail loudly rather than falling back silently (thesis-2).
-func registerAdapter(cfg *config.Config, log *slog.Logger) error {
+// buildAdapter constructs the adapter selected by ADAPTER. Unknown values fail
+// loudly rather than falling back silently (thesis-2). One branch per transport
+// dialect, not per provider.
+func buildAdapter(cfg *config.Config, log *slog.Logger) (adapter.Adapter, error) {
 	switch cfg.Adapter {
 	case anthropic.Name:
 		a, err := anthropic.New(anthropic.ConfigureOpts{
@@ -106,9 +108,9 @@ func registerAdapter(cfg *config.Config, log *slog.Logger) error {
 			Logger:  log,
 		})
 		if err != nil {
-			return fmt.Errorf("anthropic adapter: %w", err)
+			return nil, fmt.Errorf("anthropic adapter: %w", err)
 		}
-		adapter.Register(a)
+		return a, nil
 	default:
 		// Every OpenAI-ChatCompletions provider is a preset row; unknown names
 		// fail loudly from openaichat.New (it lists valid presets). One branch
@@ -122,11 +124,10 @@ func registerAdapter(cfg *config.Config, log *slog.Logger) error {
 			HaikuModel:    cfg.UpstreamHaikuModel,
 		})
 		if err != nil {
-			return fmt.Errorf("%w; or ADAPTER=%q", err, anthropic.Name)
+			return nil, fmt.Errorf("%w; or ADAPTER=%q", err, anthropic.Name)
 		}
-		adapter.Register(a)
+		return a, nil
 	}
-	return nil
 }
 
 func loadConfig() (*config.Config, error) {

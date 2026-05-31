@@ -9,7 +9,7 @@
 //     self-contained sub-package implementing Adapter, including Translator()
 //     for its dialect.
 //
-// cmd/shim/main.go's registerAdapter constructs the adapter — one branch per
+// cmd/shim/main.go's buildAdapter constructs the adapter — one branch per
 // dialect, no init()-time registration, no blank-import side effects.
 package adapter
 
@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sync"
 
 	"github.com/1mb-dev/shim/internal/translate"
 )
@@ -115,50 +114,4 @@ func WithInboundHeaders(ctx context.Context, h http.Header) context.Context {
 func InboundHeaders(ctx context.Context) http.Header {
 	h, _ := ctx.Value(inboundHeadersKey{}).(http.Header)
 	return h
-}
-
-var (
-	mu       sync.RWMutex
-	registry = map[string]Adapter{}
-)
-
-// Register adds a in the global registry. Called from cmd/shim/main.go
-// after constructing the adapter via its New. Panics on duplicate
-// registration so misconfiguration fails at startup, not at first request.
-func Register(a Adapter) {
-	if a == nil {
-		panic("adapter: Register called with nil adapter")
-	}
-	name := a.Name()
-	if name == "" {
-		panic("adapter: Register called with empty Name()")
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if _, exists := registry[name]; exists {
-		panic(fmt.Sprintf("adapter: %q already registered", name))
-	}
-	registry[name] = a
-}
-
-// Get returns the adapter registered under name. The bool is false when no
-// such adapter exists — callers must handle this loudly (T2).
-func Get(name string) (Adapter, bool) {
-	mu.RLock()
-	defer mu.RUnlock()
-	a, ok := registry[name]
-	return a, ok
-}
-
-// Names returns the sorted list of registered adapter names. Useful for
-// error messages when Get fails.
-func Names() []string {
-	mu.RLock()
-	defer mu.RUnlock()
-	out := make([]string, 0, len(registry))
-	for k := range registry {
-		out = append(out, k)
-	}
-	// Avoid importing "sort" here; caller can sort if order matters.
-	return out
 }
