@@ -1,22 +1,29 @@
 # shim
 
-A Go-native proxy that lets Claude Code run against any OpenAI-compatible
-model provider. Set `ANTHROPIC_BASE_URL` to point at shim, and Claude Code's
-Messages-API requests get translated into OpenAI ChatCompletions and routed
-to your configured upstream. The OpenAI-dialect providers — **deepseek**,
-**openai**, **openrouter**, **ollama** — are data rows in one preset registry
-(base URL + per-role model map + auth flag); adding another is a row, not a
-file. **anthropic-passthrough** is the other transport: a transparent proxy to
-a native Anthropic-Messages endpoint, no translation. Select via `ADAPTER`.
+An HTTP proxy that puts the Anthropic Messages API in front of OpenAI-compatible
+model providers, and measures every request it forwards. Point Claude Code at
+shim via `ANTHROPIC_BASE_URL`; its Messages-API calls are translated to OpenAI
+ChatCompletions and routed to your configured upstream.
 
-Single static binary. Stdlib-leaning, with one runtime dependency:
-`pkoukk/tiktoken-go` (cl100k_base BPE tables, embedded at compile time —
-no network fetch at startup). See [Dependencies](#dependencies).
+shim is a measurement layer for Claude Code's upstream, not a way to get cheaper
+tokens. `/v1/metrics` reports per-request latency and token drift, every request
+shim rewrites in flight is logged, and `/v1/messages/explain` returns the exact
+upstream body shim would send before a request leaves the box.
 
-**Status: v0.5.0.** A pluggable per-adapter translator carries two transport
-dialects — OpenAI ChatCompletions (the preset family) and identity (passthrough).
-What's listed under "What works" is what's wired. Anything in "What doesn't"
-returns a clear error rather than silently misbehaving.
+The OpenAI-dialect providers (**deepseek**, **openai**, **openrouter**,
+**ollama**) are data rows in one preset registry: base URL, per-role model map,
+auth flag. Adding another is a row, not a file. **anthropic-passthrough** is the
+other transport, a transparent proxy to a native Anthropic-Messages endpoint with
+no translation. Select via `ADAPTER`.
+
+Single static binary, stdlib-leaning, one runtime dependency (`pkoukk/tiktoken-go`;
+cl100k_base BPE tables embedded at compile time, no network fetch at startup).
+See [Dependencies](#dependencies).
+
+A per-adapter translator carries two transport dialects: OpenAI ChatCompletions
+(the preset family) and identity (passthrough). "What works" is what's wired;
+anything under "What doesn't" returns a clear error rather than silently
+misbehaving.
 
 ## When NOT to use shim
 
@@ -57,14 +64,14 @@ No proxy needed.
 
 ## What works
 
-- `POST /v1/messages` — Anthropic Messages API. Non-streaming AND streaming (`{"stream": true}` returns the canonical Anthropic SSE event sequence: `message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` → `message_delta` → `message_stop`).
+- `POST /v1/messages` — Anthropic Messages API, non-streaming and streaming. `{"stream": true}` returns the canonical Anthropic SSE sequence (`message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` → `message_delta` → `message_stop`). The translating presets buffer the upstream then emit that sequence in one burst — correct protocol, no per-token latency yet; passthrough streams live. See [streaming caveat](#what-doesnt-yet).
 - `POST /v1/messages/count_tokens` — cl100k_base BPE count (see [Measurement](#measurement)).
 - `POST /v1/messages/explain` — dry-run: returns the upstream request shim *would* send + every mutation it would apply (model rewrite, stop-sequence cap), **without calling the upstream**. The tangible "loud-fail on drift" view; reuses the real translation path. See [Measurement](#measurement).
 - `GET /v1/metrics` — JSON snapshot: per-endpoint latency p50/p95/p99, shim-vs-upstream token-delta totals, rewrite-event counts. See [Measurement](#measurement).
 - `GET /metrics` — the same signals in Prometheus text-exposition format (scrapeable). See [Measurement](#measurement).
 - `GET /health` (and the alias `/healthz`) — `{"status":"ok"}` (liveness); `GET /readyz` — `{"status":"ready"}` (readiness).
 - Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences` (capped at 4 per OpenAI's limit; over-cap requests are truncated and a `warn` log line emitted), `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
-- Thinking + reasoning_content roundtrip (Stage 2.6c): the `thinking: {type, ...}` request field passes through to the upstream. When an upstream emits `reasoning_content` on a response, shim translates it to an Anthropic thinking block (`{type: "thinking", thinking: ..., signature: "shim-passthrough-v1"}`); when clients echo thinking blocks back on continuations, shim translates them back to `reasoning_content` on the outbound request. Block ordering: thinking precedes tool_use in assistant turns per Anthropic spec. Multiple thinking blocks concatenate (newline-separated) into one reasoning_content string. The signature is a constant — shim does not verify on roundtrip; see "Errors and debugging" for the design rationale. (This roundtrip is live for upstreams that surface reasoning — DeepSeek does; OpenAI hides it, so thinking blocks are a no-op there, not a bug.)
+- Thinking / `reasoning_content` roundtrip. The `thinking` request field passes through to the upstream; an upstream `reasoning_content` response becomes an Anthropic thinking block (`signature: "shim-passthrough-v1"`, constant, not verified on roundtrip), and thinking blocks echoed back on continuations translate back to `reasoning_content`. Thinking precedes tool_use in assistant turns; multiple thinking blocks concatenate into one `reasoning_content`. Live only for upstreams that surface reasoning (DeepSeek does; OpenAI hides it, so thinking blocks are a no-op there, not a bug). Rationale in [Thinking-block signatures](#thinking-block-signatures).
 - Adapters: the OpenAI-dialect **preset registry** (`deepseek` `https://api.deepseek.com/v1`, `openai` `https://api.openai.com/v1`, `openrouter` `https://openrouter.ai/api/v1`, `ollama` `http://localhost:11434/v1` — all translate) and **anthropic-passthrough** (`https://api.anthropic.com`, native Anthropic Messages — forwards verbatim). Ollama runs keyless; the rest need `UPSTREAM_API_KEY`. Select via `ADAPTER`; per-preset model maps in [`.env.example`](.env.example). See [Transparent passthrough](#transparent-passthrough).
 - Upstream response headers forwarded on an allowlist: `request-id`, `retry-after`, and the `anthropic-ratelimit-*` family (so clients can trace requests and back off). Content-framing and hop-by-hop headers are never forwarded — shim sets those itself.
 - Model mapping: Claude Code sends `claude-opus*`/`claude-sonnet*`/`claude-haiku*`; each preset maps the three roles to its own upstream models (e.g. deepseek routes opus → `deepseek-v4-pro`, sonnet/haiku → `deepseek-v4-flash`; the full per-preset table is in [`.env.example`](.env.example)). Precedence per role: `UPSTREAM_{OPUS,SONNET,HAIKU}_MODEL` env override > preset role default > `UPSTREAM_MODEL` catch-all (only for presets with no role default, e.g. ollama) > preset default. The bare/`<role>-` hyphen anchor is deliberate — `claude-opus` and `claude-opus-4-8` both match opus, but `claude-opusxxx` must not. Non-claude names pass through unless `UPSTREAM_MODEL` is set. Every rewrite logs `info` and increments `rewrites.model` in `/v1/metrics`. Preset model IDs are verified-current (2026-05) but drift with vendor releases — override via the env vars above.
@@ -77,7 +84,7 @@ No proxy needed.
 These all return a clear error — never silent forwarding.
 
 - **`thinking: {display: "omitted"}` / `redacted_thinking` blocks.** Anthropic supports a "show me the signature but redact the content" mode for thinking blocks. shim doesn't — there's no stateless path to reproduce a signature for absent content. Defer until a real user behind the feature exists.
-- **Per-token streaming for the *translating* presets.** shim's buffer-then-restream MVP collapses reasoning + content into one final response, then emits the canonical SSE sequence in one burst. Real per-token streaming for translated providers is future work. (anthropic-passthrough already streams live — see the streaming caveat.)
+- **Per-token streaming for the *translating* presets.** shim drives the upstream non-streaming, then emits the canonical SSE sequence in one burst: correct protocol, no per-token latency. Per-token streaming for translated providers is future work. (Passthrough already streams live.)
 - **Prompt caching markers.** Not translated (passthrough forwards them verbatim, untranslated).
 - **Housekeeping short-circuits** (e.g. quota probes, title generation). Forwarded to upstream as normal traffic.
 - **OpenAI Responses / "o"-series reasoning API.** The preset family speaks chat-completions only; the Responses API is a different transport dialect, out of scope.
@@ -114,10 +121,9 @@ vendored at build time, not fetched at startup. The token count is a
 cross-tokenizer approximation/drift signal, not a billing-grade count (see
 [Token counting](#token-counting)).
 
-Binary footprint as of Stage 2: ~14 MB per platform (darwin-arm64 /
-linux-amd64 / linux-arm64 all measured at 14 MB). Stage 0/1 binaries
-were ~6.5 MB (linux-amd64 7.0 MB); the tokenizer adds ~7 MB. The binary
-is still single-file static — bigger file, same drop-in story.
+Binary footprint: ~14 MB per platform (darwin-arm64, linux-amd64, linux-arm64).
+The embedded tokenizer accounts for ~7 MB of that; the binary is still a
+single-file static drop-in.
 
 ## Config
 
@@ -185,7 +191,7 @@ If you want *only* a transparent Anthropic proxy with no measurement, you don't
 need shim — point Claude Code at the endpoint directly. shim earns its place
 when you want the measurement and loud-fail layer.
 
-Transparency covers **errors** too (v0.3.1): on an upstream non-2xx the
+Transparency covers **errors** too: on an upstream non-2xx the
 passthrough path forwards the upstream status and error body **verbatim** — the
 native-Anthropic error envelope is already correctly shaped, so re-wrapping it
 would only lose fidelity. This is the error-path analog of the response
@@ -214,7 +220,7 @@ The 200s server `WriteTimeout` is the hard upper bound on any single
 response (streaming or non-streaming); it's sized to outlive the 180s upstream
 `Client.Timeout` so an upstream cancellation surfaces as a recordable upstream
 error rather than a server-side write timeout. The 180s ceiling covers
-reasoning-mode generations under the buffer-then-restream MVP.
+reasoning-mode generations under the buffer-then-restream path.
 
 ## Run
 
@@ -305,7 +311,7 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
   still a drift signal, not a verification of shim, since passthrough does no
   translation.
 - `rewrites.model` counts how often shim replaced the requested model name
-  (Stage 0's DeepSeek adapter rewrites every request, so this matches
+  (the translating presets rewrite every claude-* request, so this tracks
   `/v1/messages` `n`). `rewrites.stop_sequences` counts over-cap truncations.
 - `requests_seen.<path>` counts every handler entry — the denominator for
   any ratio operators want to compute (errors per request, rewrites per
@@ -326,15 +332,14 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
   stack-bearing `handler panic recovered` log line, and this counter (thesis 2).
   A non-zero value is always a bug to investigate.
 
-**Caveats.** The endpoint is loopback-only by default (no auth — matches
-`/health`). State is in-memory only and resets on restart. The JSON shape
-is committed for Stage 1 but unstable until v0.1.0; breaking changes will
-land in `CHANGELOG.md`.
+**Caveats.** The endpoint is loopback-only by default (no auth, matches
+`/health`). State is in-memory only and resets on restart. The JSON shape may
+change; breaking changes land in `CHANGELOG.md`.
 
 ### Prometheus
 
 `GET /metrics` exposes the same aggregates in Prometheus text-exposition
-format (v0.0.4), so shim can sit *in front of* Grafana/Prometheus rather than
+format, so shim can sit *in front of* Grafana/Prometheus rather than
 replace them. Hand-rolled — no `client_golang` dependency, so the binary stays
 a single static file.
 
@@ -441,7 +446,7 @@ prompt content is a concern, run a downstream redactor against the
 `body_preview` field at the log sink. Shim does not pre-redact here
 because the diagnostic value depends on the verbatim form.
 
-### Thinking-block signatures (Stage 2.6c)
+### Thinking-block signatures
 
 Anthropic's extended-thinking blocks carry a `signature` field for
 multi-turn continuity — clients pass it back unchanged on continuations,
