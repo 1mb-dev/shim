@@ -3,6 +3,25 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.1] — Surgical pass: honest artifacts + loud-fail on panic (2026-05-31)
+
+A go-public-prep pass: make every artifact tell the v0.5 truth (docs/comments
+restored from v0.3), enforce the theses where the code drifted from them, and
+add the one missing loud-fail guarantee. Behavior-neutral to clients bar two new
+guarantees below.
+
+### Added
+- Handler-panic recovery: a panic in any handler now becomes an Anthropic-shaped 500 + a stack-bearing `handler panic recovered` log line + the new `panics_total` counter — instead of a silently dropped connection (thesis 2). Transport-level middleware; the translator seam is untouched.
+- `panics_total` in `/v1/metrics` JSON and `shim_panics_total` in `/metrics` (Prometheus, emitted only when non-zero).
+- Startup `WARN` when `BIND_ADDR` is not loopback — shim has no inbound auth, so a wide bind is an open relay to the upstream (worse for keyless presets). A warning, not a block.
+
+### Changed
+- `/v1/metrics` JSON gains a `panics_total` field (additive).
+- Internal cleanup (no client-visible behavior change): the global adapter registry was removed — the adapter is now injected into `server.New` directly; `Adapter.Validate` is the single config gate (the duplicate `BuildRequest` re-checks are gone); the twin thinking-config types collapsed into one `ThinkingConfig`.
+
+### Docs
+- README + CHANGELOG + package docs restored to the v0.5 preset-registry reality; stale build-history comments scrubbed; the no-inbound-auth/loopback security posture and tiktoken-go provenance stated plainly.
+
 ## [0.5.0] — OpenAI-dialect preset registry (2026-05-31)
 
 The "3rd adapter" reframed: OpenAI, OpenRouter and Ollama all speak the OpenAI
