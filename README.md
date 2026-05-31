@@ -3,18 +3,20 @@
 A Go-native proxy that lets Claude Code run against any OpenAI-compatible
 model provider. Set `ANTHROPIC_BASE_URL` to point at shim, and Claude Code's
 Messages-API requests get translated into OpenAI ChatCompletions and routed
-to your configured upstream. Two adapters ship: **DeepSeek** (Anthropic↔OpenAI
-translation) and **anthropic-passthrough** (transparent proxy to a native
-Anthropic-Messages endpoint, no translation).
+to your configured upstream. The OpenAI-dialect providers — **deepseek**,
+**openai**, **openrouter**, **ollama** — are data rows in one preset registry
+(base URL + per-role model map + auth flag); adding another is a row, not a
+file. **anthropic-passthrough** is the other transport: a transparent proxy to
+a native Anthropic-Messages endpoint, no translation. Select via `ADAPTER`.
 
 Single static binary. Stdlib-leaning, with one runtime dependency:
 `pkoukk/tiktoken-go` (cl100k_base BPE tables, embedded at compile time —
 no network fetch at startup). See [Dependencies](#dependencies).
 
-**Status: v0.3.0.** A pluggable per-adapter translator carries two transport
-dialects — OpenAI ChatCompletions and identity (passthrough). What's listed
-under "What works" is what's wired. Anything in "What doesn't" returns a clear
-error rather than silently misbehaving.
+**Status: v0.5.0.** A pluggable per-adapter translator carries two transport
+dialects — OpenAI ChatCompletions (the preset family) and identity (passthrough).
+What's listed under "What works" is what's wired. Anything in "What doesn't"
+returns a clear error rather than silently misbehaving.
 
 ## When NOT to use shim
 
@@ -46,10 +48,10 @@ No proxy needed.
   native Anthropic endpoint — zero translation risk — so you get shim's
   redacted logs, `/v1/metrics`, and loud-fail in front of Claude itself. See
   [Transparent passthrough](#transparent-passthrough).
-- **Multi-provider routing.** The Adapter interface in `internal/adapter/` is
-  the contract; the per-adapter translator handles the transport dialect. A
-  second OpenAI-dialect provider (OpenAI proper / Groq / OpenRouter) lands on
-  the same measurement layer.
+- **Multi-provider routing.** Four OpenAI-dialect providers (deepseek, openai,
+  openrouter, ollama) ride one translator and one measurement layer, as data
+  rows in `internal/adapter/openaichat`. Adding the next is a row — base URL,
+  per-role model map, auth flag — not a new file.
 
 ---
 
@@ -62,10 +64,10 @@ No proxy needed.
 - `GET /metrics` — the same signals in Prometheus text-exposition format (scrapeable). See [Measurement](#measurement).
 - `GET /health` (and the alias `/healthz`) — `{"status":"ok"}` (liveness); `GET /readyz` — `{"status":"ready"}` (readiness).
 - Translation: system blocks, user/assistant text, image blocks (base64 + URL), `stop_sequences` (capped at 4 per OpenAI's limit; over-cap requests are truncated and a `warn` log line emitted), `tools[]`, all `tool_choice` variants, `tool_use ↔ tool_result` roundtrip.
-- Thinking control plane + reasoning_content roundtrip (Stage 2.6c): `thinking: {type, ...}` request field is passed through identity to DeepSeek. When upstream emits `reasoning_content` on a response, shim translates it to an Anthropic thinking block (`{type: "thinking", thinking: ..., signature: "shim-passthrough-v1"}`); when clients echo thinking blocks back on continuations, shim translates them back to `reasoning_content` on the outbound request. Block ordering: thinking precedes tool_use in assistant turns per Anthropic spec. Multiple thinking blocks concatenate (newline-separated) into one reasoning_content string. The signature is a constant — shim does not verify on roundtrip; see "Errors and debugging" for the design rationale.
-- Two adapters: **DeepSeek** (`https://api.deepseek.com/v1`, OpenAI-compatible — translates) and **anthropic-passthrough** (`https://api.anthropic.com`, native Anthropic Messages — forwards verbatim). Select via `ADAPTER`. See [Transparent passthrough](#transparent-passthrough).
+- Thinking + reasoning_content roundtrip (Stage 2.6c): the `thinking: {type, ...}` request field passes through to the upstream. When an upstream emits `reasoning_content` on a response, shim translates it to an Anthropic thinking block (`{type: "thinking", thinking: ..., signature: "shim-passthrough-v1"}`); when clients echo thinking blocks back on continuations, shim translates them back to `reasoning_content` on the outbound request. Block ordering: thinking precedes tool_use in assistant turns per Anthropic spec. Multiple thinking blocks concatenate (newline-separated) into one reasoning_content string. The signature is a constant — shim does not verify on roundtrip; see "Errors and debugging" for the design rationale. (This roundtrip is live for upstreams that surface reasoning — DeepSeek does; OpenAI hides it, so thinking blocks are a no-op there, not a bug.)
+- Adapters: the OpenAI-dialect **preset registry** (`deepseek` `https://api.deepseek.com/v1`, `openai` `https://api.openai.com/v1`, `openrouter` `https://openrouter.ai/api/v1`, `ollama` `http://localhost:11434/v1` — all translate) and **anthropic-passthrough** (`https://api.anthropic.com`, native Anthropic Messages — forwards verbatim). Ollama runs keyless; the rest need `UPSTREAM_API_KEY`. Select via `ADAPTER`; per-preset model maps in [`.env.example`](.env.example). See [Transparent passthrough](#transparent-passthrough).
 - Upstream response headers forwarded on an allowlist: `request-id`, `retry-after`, and the `anthropic-ratelimit-*` family (so clients can trace requests and back off). Content-framing and hop-by-hop headers are never forwarded — shim sets those itself.
-- Model mapping: Claude Code sends `claude-opus*`/`claude-sonnet*`/`claude-haiku*`; shim routes opus to `deepseek-v4-pro`, sonnet and haiku to `deepseek-v4-flash`. These are the only two values DeepSeek's [OpenAI-format chat-completions API](https://api-docs.deepseek.com/api/create-chat-completion) accepts as `model`. (The `deepseek-v4-pro[1m]` 1M-context variant shown in DeepSeek's [Claude Code guide](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code) only works on DeepSeek's native Anthropic endpoint, not the OpenAI-format one shim uses.) Override per role via `UPSTREAM_OPUS_MODEL` / `UPSTREAM_SONNET_MODEL` / `UPSTREAM_HAIKU_MODEL`. Non-claude-prefix names pass through unchanged unless `UPSTREAM_MODEL` is set as a catch-all. Every rewrite logs `info` and increments `rewrites.model` in `/v1/metrics`.
+- Model mapping: Claude Code sends `claude-opus*`/`claude-sonnet*`/`claude-haiku*`; each preset maps the three roles to its own upstream models (e.g. deepseek routes opus → `deepseek-v4-pro`, sonnet/haiku → `deepseek-v4-flash`; the full per-preset table is in [`.env.example`](.env.example)). Precedence per role: `UPSTREAM_{OPUS,SONNET,HAIKU}_MODEL` env override > preset role default > `UPSTREAM_MODEL` catch-all (only for presets with no role default, e.g. ollama) > preset default. The bare/`<role>-` hyphen anchor is deliberate — `claude-opus` and `claude-opus-4-8` both match opus, but `claude-opusxxx` must not. Non-claude names pass through unless `UPSTREAM_MODEL` is set. Every rewrite logs `info` and increments `rewrites.model` in `/v1/metrics`. Preset model IDs are verified-current (2026-05) but drift with vendor releases — override via the env vars above.
 - `shim run [args...]` launcher: locates `claude` on PATH, injects `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY=shim`, execs it, propagates exit code. Tested end-to-end with `claude --bare -p`.
 - Redacted-by-default JSON logs via `log/slog`. `Authorization`, prompt/message content, URL query strings, and credential-shaped keys are scrubbed at log-write time.
 - Cross-compiled binaries: `darwin/arm64`, `linux/amd64`, `linux/arm64`.
@@ -75,21 +77,17 @@ No proxy needed.
 These all return a clear error — never silent forwarding.
 
 - **`thinking: {display: "omitted"}` / `redacted_thinking` blocks.** Anthropic supports a "show me the signature but redact the content" mode for thinking blocks. shim doesn't — there's no stateless path to reproduce a signature for absent content. Defer until a real user behind the feature exists.
-- **Per-token streaming for the *translating* path (DeepSeek).** shim's buffer-then-restream MVP collapses reasoning + content into one final response, then emits the canonical SSE sequence in one burst. Real per-token streaming for translated providers is future work. (anthropic-passthrough already streams live — see the streaming caveat.)
+- **Per-token streaming for the *translating* presets.** shim's buffer-then-restream MVP collapses reasoning + content into one final response, then emits the canonical SSE sequence in one burst. Real per-token streaming for translated providers is future work. (anthropic-passthrough already streams live — see the streaming caveat.)
 - **Prompt caching markers.** Not translated (passthrough forwards them verbatim, untranslated).
 - **Housekeeping short-circuits** (e.g. quota probes, title generation). Forwarded to upstream as normal traffic.
-- **A second OpenAI-dialect provider.** Only DeepSeek (translating) + anthropic-passthrough (transparent) today.
+- **OpenAI Responses / "o"-series reasoning API.** The preset family speaks chat-completions only; the Responses API is a different transport dialect, out of scope.
 - **TUI / GUI / chatbot wrappers.** Not in scope.
 
-**Streaming caveat (per dialect):** the **translating** path (DeepSeek) is buffer-then-restream — shim drives the upstream non-streaming, then emits the canonical Anthropic SSE sequence in one burst (right protocol, no per-token latency benefit yet). The **passthrough** path streams the upstream's native Anthropic SSE through live, event-by-event, byte-for-byte.
+**Streaming caveat (per dialect):** the **translating** presets are buffer-then-restream — shim drives the upstream non-streaming, then emits the canonical Anthropic SSE sequence in one burst (right protocol, no per-token latency benefit yet). The **passthrough** path streams the upstream's native Anthropic SSE through live, event-by-event, byte-for-byte.
 
 ## Install
 
-```sh
-go install github.com/1mb-dev/shim/cmd/shim@latest
-```
-
-Or from source:
+Build from source (Go 1.22+):
 
 ```sh
 git clone https://github.com/1mb-dev/shim
@@ -98,7 +96,9 @@ make build              # → ./shim
 make build-all          # → dist/shim-darwin-arm64, dist/shim-linux-{amd64,arm64}
 ```
 
-Requires Go 1.22+.
+`go install github.com/1mb-dev/shim/cmd/shim@latest` resolves once the repo is
+public. The release pipeline (GoReleaser) also produces a `FROM scratch`
+container image and a Homebrew cask; both publish at the public flip.
 
 ## Dependencies
 
@@ -107,6 +107,12 @@ toolchain required at runtime):
 
 - [`github.com/pkoukk/tiktoken-go`](https://github.com/pkoukk/tiktoken-go) — BPE tokenizer for cl100k_base counting on `/v1/messages/count_tokens` and `/v1/metrics` `token_delta.shim_total`.
 - [`github.com/pkoukk/tiktoken-go-loader`](https://github.com/pkoukk/tiktoken-go-loader) — embeds BPE tables (cl100k + o200k + p50k + r50k) via `go:embed`. shim only uses cl100k; the other three add ~5MB of dead weight to the binary.
+
+Both are community ports (not OpenAI-official), pre-1.0, single-maintainer.
+They are compile-time embedded, so the runtime supply-chain exposure is code
+vendored at build time, not fetched at startup. The token count is a
+cross-tokenizer approximation/drift signal, not a billing-grade count (see
+[Token counting](#token-counting)).
 
 Binary footprint as of Stage 2: ~14 MB per platform (darwin-arm64 /
 linux-amd64 / linux-arm64 all measured at 14 MB). Stage 0/1 binaries
@@ -121,13 +127,13 @@ Copy `.env.example` to `.env` and fill in `UPSTREAM_API_KEY`. All variables:
 |---|---|---|
 | `BIND_ADDR` | `127.0.0.1` | Listen address. **Do not bind 0.0.0.0** unless you accept that the proxy carries your upstream API key and has no auth of its own. |
 | `PORT` | `8082` | TCP port. |
-| `ADAPTER` | `deepseek` | `deepseek` (translating) or `anthropic` (transparent passthrough). Unknown values fail at startup. |
-| `UPSTREAM_API_KEY` | _required_ | Credential sent upstream — `Authorization: Bearer` for DeepSeek, `x-api-key` for anthropic-passthrough. |
-| `UPSTREAM_BASE_URL` | per-adapter default | Upstream root. Default `https://api.deepseek.com/v1` (deepseek) or `https://api.anthropic.com` (anthropic). |
-| `UPSTREAM_OPUS_MODEL` | (empty → `deepseek-v4-pro`) | Override for `claude-opus*`. DeepSeek only — passthrough forwards the model name unchanged. |
-| `UPSTREAM_SONNET_MODEL` | (empty → `deepseek-v4-flash`) | Override for `claude-sonnet*`. DeepSeek only. |
-| `UPSTREAM_HAIKU_MODEL` | (empty → `deepseek-v4-flash`) | Override for `claude-haiku*`. DeepSeek only. |
-| `UPSTREAM_MODEL` | (empty) | Catch-all override for non-claude-prefix names. DeepSeek only; empty = pass through. |
+| `ADAPTER` | `deepseek` | `deepseek` / `openai` / `openrouter` / `ollama` (OpenAI-dialect, translating) or `anthropic` (transparent passthrough). Unknown values fail at startup. |
+| `UPSTREAM_API_KEY` | _required (except `ollama`)_ | Credential sent upstream — `Authorization: Bearer` for the OpenAI-dialect presets, `x-api-key` for anthropic-passthrough. `ollama` runs keyless (a key is still forwarded if set). |
+| `UPSTREAM_BASE_URL` | per-preset default | Upstream root. Empty → the chosen preset's default (deepseek `…/v1`, openai `…/v1`, openrouter `…/api/v1`, ollama `…:11434/v1`, anthropic `https://api.anthropic.com`). Set to point at a non-default host. |
+| `UPSTREAM_OPUS_MODEL` | (preset role default) | Override for `claude-opus*` on the active OpenAI-dialect preset; passthrough forwards the model name unchanged. |
+| `UPSTREAM_SONNET_MODEL` | (preset role default) | Override for `claude-sonnet*`. |
+| `UPSTREAM_HAIKU_MODEL` | (preset role default) | Override for `claude-haiku*`. |
+| `UPSTREAM_MODEL` | (empty) | Catch-all for non-claude names, and the role models for presets without role defaults (e.g. ollama). Empty = pass through. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `LOG_REDACT` | `true` | Scrub secrets and prompt content from logs. Set `false` for local debugging only. |
 | `MAX_REQUEST_BYTES` | `1048576` | Oversize body returns HTTP 413 Anthropic-shaped error. |
@@ -142,7 +148,11 @@ from `.env`). No inbound rate-limiting, per-route auth, or quota tracking.
 
 If you bind to a non-loopback address, anyone on that network can route
 through shim, burning your upstream quota and exposing prompt content.
-Don't do it without an authenticating reverse proxy in front.
+Don't do it without an authenticating reverse proxy in front. shim emits a
+startup `WARN` when `BIND_ADDR` is not loopback. This applies doubly to the
+keyless `ollama` preset: with no upstream key gating abuse either, a wide bind
+is a fully open relay to your local model. shim has no inbound auth on *any*
+endpoint — `/v1/metrics`, `/health`, and the rest are open on the bind address.
 
 Logs scrub `Authorization`, prompt/message content, URL query strings,
 and credential-shaped keys by default (`LOG_REDACT=true`). Set
@@ -458,8 +468,8 @@ cmd/shim/             # CLI entry: shim, shim run
 internal/
   config/             # zero-dep .env loader
   obslog/             # log/slog with redaction
-  adapter/            # interface + registry + InboundHeaders ctx helper
-    deepseek/         # OpenAI-dialect (translating) adapter
+  adapter/            # Adapter interface + InboundHeaders ctx helper
+    openaichat/       # OpenAI-dialect core + preset registry (deepseek/openai/openrouter/ollama)
     anthropic/        # native-Anthropic (transparent passthrough) adapter
   translate/          # Anthropic ↔ OpenAI + per-adapter Translator seam (passthrough.go = identity)
   tokens/             # cl100k_base BPE counter
@@ -469,10 +479,13 @@ internal/
 testdata/fixtures/    # recorded upstream responses for tests
 ```
 
-Adding a provider is a new sub-package under `internal/adapter/` that
-implements `adapter.Adapter` (including `Translator()` for its transport
-dialect). Construct it in `cmd/shim/main.go`'s `registerAdapter` switch and
-call `adapter.Register` explicitly — there is no `init()`-time registration.
+Adding a provider depends on its transport dialect. An **OpenAI-dialect**
+provider is a data row in `openaichat`'s preset registry — base URL, per-role
+model map, auth flag, optional headers — no new file. A **genuinely new
+dialect** (not OpenAI-chat, not native Anthropic) is a new sub-package under
+`internal/adapter/` implementing `adapter.Adapter` (including `Translator()`
+for its dialect), wired into `cmd/shim/main.go`'s `registerAdapter` —
+one branch per dialect, no `init()`-time registration.
 
 ## License
 
