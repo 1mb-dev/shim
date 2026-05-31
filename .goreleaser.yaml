@@ -72,6 +72,13 @@ brews:
       bin.install "shim"
     test: |
       assert_match "shim", shell_output("#{bin}/shim version")
+    # Opt-in background service: `brew services start shim`. Reads config from
+    # ~/.config/shim/.env regardless of working dir. Not auto-started on install.
+    service: |
+      run [opt_bin/"shim"]
+      keep_alive true
+      log_path var/"log/shim.log"
+      error_log_path var/"log/shim.log"
 
 release:
   github:

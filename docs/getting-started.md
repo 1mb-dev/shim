@@ -29,7 +29,10 @@ export ADAPTER=deepseek
 export UPSTREAM_API_KEY=<your key>
 ```
 
-Every variable and the per-preset model maps: [Configuration]({{ '/configuration.html' | relative_url }}).
+shim reads config in order: `SHIM_ENV_FILE`, then `./.env`, then
+`~/.config/shim/.env` (the last so a background service finds it regardless of
+working directory). Every variable and the per-preset model maps:
+[Configuration]({{ '/configuration.html' | relative_url }}).
 
 ## Run
 
@@ -44,6 +47,13 @@ Or let the launcher set both vars and exec claude in one step:
 
 ```sh
 shim run "write a hello-world go program"
+```
+
+Installed via Homebrew, shim can run as an always-on background service (opt-in,
+not auto-started). Put your key in `~/.config/shim/.env` first, then:
+
+```sh
+brew services start shim
 ```
 
 ## Verify

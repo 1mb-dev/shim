@@ -222,7 +222,7 @@ reasoning-mode generations under the buffer-then-restream path.
 
 ## Run
 
-Two ways:
+A few ways:
 
 **Manual.** Start the server, point Claude Code at it:
 
@@ -241,6 +241,21 @@ claude
 ```
 
 The launcher prints a single breadcrumb line to stderr (`shim run → claude=/path/to/claude, base=http://...`) so you can see what it resolved before claude's own output starts.
+
+**Service** (Homebrew). shim can run as a managed background daemon so it's always up — no manual `./shim &`. Opt-in; install does not auto-start it:
+
+```sh
+brew services start shim
+```
+
+A service has no working directory of its own, so put config where shim looks for it. It reads config in order: `SHIM_ENV_FILE`, then `./.env`, then `~/.config/shim/.env`:
+
+```sh
+mkdir -p ~/.config/shim
+printf 'ADAPTER=deepseek\nUPSTREAM_API_KEY=<your key>\n' > ~/.config/shim/.env
+```
+
+The keyless `ollama` preset needs no key — `brew services start shim` just works against a local Ollama.
 
 `shim version` prints the build version (set at release; `dev` for a plain `go build`).
 

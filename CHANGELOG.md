@@ -15,6 +15,7 @@ lands as a non-breaking change. anthropic-passthrough already streams live.
 
 ### Added
 - `shim version` — reports the build version (set via release ldflags; `dev` for a plain `go build`).
+- Homebrew formula with an opt-in background service (`brew services start shim`), plus a config search path — `SHIM_ENV_FILE`, then `./.env`, then `~/.config/shim/.env` — so a service finds its config regardless of working directory.
 - CI security gates: gitleaks full-history secret scan (blocking) + govulncheck.
 - Minimal Jekyll docsite under `docs/` (landing, getting-started, configuration, measurement), plus `SECURITY.md` and `CONTRIBUTING.md`.
 

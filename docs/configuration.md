@@ -4,8 +4,12 @@ title: Configuration
 
 # Configuration
 
-Everything is an environment variable (or a line in a `.env` file; copy
-[`.env.example`](https://github.com/1mb-dev/shim/blob/main/.env.example)).
+Everything is an environment variable (or a line in a `.env` file). shim reads
+the file in order: `SHIM_ENV_FILE`, then `./.env`, then `~/.config/shim/.env`
+(the last so a `brew services`-managed daemon finds it regardless of working
+directory). Copy
+[`.env.example`](https://github.com/1mb-dev/shim/blob/main/.env.example) into
+one of those.
 
 | Variable | Default | Purpose |
 |---|---|---|
