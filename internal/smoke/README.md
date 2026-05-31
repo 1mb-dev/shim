@@ -1,11 +1,11 @@
-# Stage 2.5b — live smoke
+# live smoke
 
-One opt-in test. Spawns `./shim` against the real DeepSeek API,
-sends one minimal request, asserts the round-trip works end to end.
-Closes the gap between the harness (which uses a fake upstream) and
-production reality.
+Opt-in live round-trip tests. Spawn `./shim` against a real upstream, send one
+minimal request, assert the round-trip works end to end. Closes the gap between
+the harness (which uses a fake upstream) and production reality. Two upstreams:
+**DeepSeek** (paid) and **Ollama** (free, offline).
 
-## Running
+## DeepSeek (paid)
 
 ```sh
 export SHIM_SMOKE=1
@@ -24,6 +24,19 @@ export SHIM_SMOKE_MODEL=claude-opus-4-7   # exercises today's-bug path
 ```
 
 Default model is `claude-sonnet-4-6` (cheapest mapping → `deepseek-v4-flash`).
+
+## Ollama (free, offline)
+
+```sh
+ollama pull llama3.3
+export SHIM_OLLAMA_SMOKE=1
+make smoke-ollama
+```
+
+Free and local — no key, no billing line. Drives the `ollama` preset against
+`localhost:11434`. Missing `SHIM_OLLAMA_SMOKE` → skips silently; set but Ollama
+unreachable → skips (not a failure), so it's safe to run anywhere. Same
+build-tag double-gate as DeepSeek (`//go:build smoke` + the env var).
 
 ## Why a separate key
 
@@ -47,9 +60,9 @@ before every push; expensive enough that you'd notice 10,000× by accident.
 ## When to run
 
 - Before tagging a release.
-- After any change to `internal/adapter/deepseek/`.
+- After any change to `internal/adapter/openaichat/` (the preset core or rows).
 - After any change to `internal/translate/` that touches request building.
-- When updating DeepSeek-side model IDs.
+- When updating preset model IDs.
 
 NOT in CI by default. NOT on every `make test`. NOT on every commit.
 The build tag (`//go:build smoke`) and `SHIM_SMOKE=1` gate are

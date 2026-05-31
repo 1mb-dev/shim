@@ -35,9 +35,9 @@ shim process serves all cases, so absolute checks would be order-dependent.
 
 ## What it does NOT cover
 
-- **Live DeepSeek.** Network flake + key handling make it unsuitable for a
-  regular gate. The README's "When NOT to use shim" section + manual
-  `make smoke` (TBD) cover live-upstream contract drift.
+- **Live upstreams.** Network flake + key handling make them unsuitable for a
+  regular gate. The opt-in smoke tests cover live-upstream contract drift:
+  `make smoke` (paid DeepSeek) and `make smoke-ollama` (free, offline).
 - **Real `claude` binary.** Case 7 uses a shell-script stub; the launcher's
   exec path is already exercised in `internal/launcher/run_test.go`.
 - **Cross-platform matrix.** Single platform; CI matrix is Stage 4+.

@@ -3,6 +3,27 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.0] — OpenAI-dialect preset registry (2026-05-31)
+
+The "3rd adapter" reframed: OpenAI, OpenRouter and Ollama all speak the OpenAI
+dialect `deepseek` already implemented, so the adapter collapsed into one
+`internal/adapter/openaichat` core with providers as **data rows** (base URL +
+per-role model map + auth flag + optional headers). Adding an OpenAI-dialect
+provider is now a row, not a file. The translator seam is untouched (still
+4 methods, two axes) — this is the provider-quirk axis. See
+`docs/adr/0001-translator-seam-two-axis.md`.
+
+### Added
+- `internal/adapter/openaichat` — the OpenAI-ChatCompletions core; `deepseek` becomes a preset row, joined by `openai` (`https://api.openai.com/v1`), `openrouter` (`https://openrouter.ai/api/v1`), and `ollama` (`http://localhost:11434/v1`). `New(name, Config)` resolves the row and merges env config; unknown name fails loudly listing valid presets.
+- Keyless `ollama` preset (`authRequired:false`) — starts and runs with no `UPSTREAM_API_KEY`; an optional key is still forwarded if set (proxy setups).
+- `make smoke-ollama` — free, offline live round-trip (build tag `smoke` + `SHIM_OLLAMA_SMOKE=1`; skips if Ollama unreachable at `localhost:11434`).
+
+### Changed
+- The auth gate moved from `config.Load` (which globally required `UPSTREAM_API_KEY`) to `Adapter.Validate`, run once at startup — so `authRequired:false` presets start keyless. Per-role model precedence: `UPSTREAM_*_MODEL` env override > preset role default > `UPSTREAM_MODEL` catch-all > preset default.
+- `UPSTREAM_BASE_URL` has **no global default**; each preset/adapter supplies its own. This also fixed a latent misroute live since v0.3 — the anthropic passthrough was silently defaulting to the deepseek endpoint when `UPSTREAM_BASE_URL` was unset.
+- `registerAdapter` branches one case per transport dialect (`anthropic` → `anthropic.New`; default → `openaichat.New`), not one per provider.
+- Preset model IDs verified-current (2026-05): deepseek `v4-pro`/`v4-flash`, openai `gpt-5.5`/`gpt-5.4-mini`, openrouter `claude-{opus-4.8,sonnet-4.6,haiku-4.5}`, ollama `llama3.3`. They drift with vendor releases — override via `UPSTREAM_*_MODEL`.
+
 ## [0.4.0] — Honest measurement made real + installable (2026-05-30)
 
 Makes the honest-measurement thesis machine-consumable and the binary actually
