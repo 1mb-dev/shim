@@ -95,7 +95,7 @@ Then watch what it did: `curl -s localhost:8082/v1/metrics | python3 -m json.too
 These all return a clear error — never silent forwarding.
 
 - **`thinking: {display: "omitted"}` / `redacted_thinking` blocks.** Anthropic supports a "show me the signature but redact the content" mode for thinking blocks. shim doesn't — there's no stateless path to reproduce a signature for absent content. Defer until a real user behind the feature exists.
-- **Per-token streaming for the *translating* presets.** shim drives the upstream non-streaming, then emits the canonical SSE sequence in one burst: correct protocol, no per-token latency. Per-token streaming for translated providers is future work. (Passthrough already streams live.)
+- **Live per-token streaming on the *translating* presets.** By design, shim drives these upstreams non-streaming and emits the canonical Anthropic SSE in one burst — correct protocol and event ordering, no per-token latency. Real per-token streaming is the headline post-1.0 enhancement and lands as a non-breaking change (the SSE event shape is unchanged). Passthrough already streams live.
 - **Prompt caching markers.** Not translated (passthrough forwards them verbatim, untranslated).
 - **Housekeeping short-circuits** (e.g. quota probes, title generation). Forwarded to upstream as normal traffic.
 - **OpenAI Responses / "o"-series reasoning API.** The preset family speaks chat-completions only; the Responses API is a different transport dialect, out of scope.
@@ -144,7 +144,7 @@ Copy `.env.example` to `.env` and fill in `UPSTREAM_API_KEY`. All variables:
 |---|---|---|
 | `BIND_ADDR` | `127.0.0.1` | Listen address. **Do not bind 0.0.0.0** unless you accept that the proxy carries your upstream API key and has no auth of its own. |
 | `PORT` | `8082` | TCP port. |
-| `ADAPTER` | `deepseek` | `deepseek` / `openai` / `openrouter` / `ollama` (OpenAI-dialect, translating) or `anthropic` (transparent passthrough). Unknown values fail at startup. |
+| `ADAPTER` | `deepseek` | `deepseek` / `openai` / `openrouter` / `ollama` (OpenAI-dialect, translating, buffered SSE) or `anthropic` (transparent passthrough, live SSE). Unknown values fail at startup. |
 | `UPSTREAM_API_KEY` | _required (except `ollama`)_ | Credential sent upstream — `Authorization: Bearer` for the OpenAI-dialect presets, `x-api-key` for anthropic-passthrough. `ollama` runs keyless (a key is still forwarded if set). |
 | `UPSTREAM_BASE_URL` | per-preset default | Upstream root. Empty → the chosen preset's default (deepseek `…/v1`, openai `…/v1`, openrouter `…/api/v1`, ollama `…:11434/v1`, anthropic `https://api.anthropic.com`). Set to point at a non-default host. |
 | `UPSTREAM_OPUS_MODEL` | (preset role default) | Override for `claude-opus*` on the active OpenAI-dialect preset; passthrough forwards the model name unchanged. |

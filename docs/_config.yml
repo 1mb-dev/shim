@@ -1,0 +1,15 @@
+# Minimal GitHub Pages site, built natively by Pages (no Actions workflow).
+# Source: main branch /docs folder. Enable at: Settings > Pages > Deploy from a
+# branch > main / docs.
+title: shim
+description: >-
+  HTTP proxy: run Claude Code against OpenAI-compatible providers
+  (DeepSeek / OpenAI / OpenRouter / Ollama) or pass through to Anthropic,
+  with built-in request measurement.
+theme: jekyll-theme-cayman
+url: https://1mb-dev.github.io
+baseurl: /shim
+
+# ADRs stay repo-only markdown (linked to GitHub from the landing page).
+exclude:
+  - adr/

@@ -35,3 +35,9 @@ coverage.html
 vendor/
 go.work
 go.work.sum
+
+# Jekyll docsite (docs/) build artifacts
+docs/_site/
+docs/.jekyll-cache/
+docs/.jekyll-metadata
+docs/Gemfile.lock

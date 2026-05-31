@@ -1,3 +1,7 @@
+---
+title: Measurement reference
+---
+
 # Measurement reference
 
 Full reference for shim's measurement surface. The README has the overview;
@@ -36,7 +40,7 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
 - `upstream_errors.<path>` counts non-2xx responses from the upstream. `total` is all of them; `class_4xx` + `class_5xx` bucket by HTTP class (3xx and oddities contribute to `total` and `by_status` only). `by_status` is the per-code breakdown. The companion diagnostic — the upstream body — is on the `upstream error` log line (see [Errors and debugging](#errors-and-debugging)).
 - `panics_total` counts handler panics the server recovered: a panic becomes an Anthropic-shaped 500, a stack-bearing `handler panic recovered` log line, and this counter, instead of a silently dropped connection. A non-zero value is always a bug to investigate.
 
-State is in-memory and resets on restart. The endpoint is loopback-only by default (no auth, matches `/health`). The JSON shape may change; breaking changes land in `CHANGELOG.md`.
+State is in-memory and resets on restart. The endpoint is loopback-only by default (no auth, matches `/health`). The JSON shape is part of shim's stable contract; a breaking change ships in a major version bump with a `CHANGELOG.md` note.
 
 ## `/metrics` (Prometheus)
 
