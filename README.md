@@ -108,7 +108,6 @@ These all return a clear error — never silent forwarding.
 ```sh
 brew install 1mb-dev/tap/shim
 go install github.com/1mb-dev/shim/cmd/shim@latest
-docker pull ghcr.io/1mb-dev/shim
 ```
 
 Or build from source (Go 1.25+):
@@ -117,15 +116,6 @@ Or build from source (Go 1.25+):
 git clone https://github.com/1mb-dev/shim && cd shim
 make build              # → ./shim
 make build-all          # → dist/shim-{darwin-arm64,linux-amd64,linux-arm64}
-```
-
-The container is `FROM scratch` (binary + CA certs, nonroot). It has no loopback
-peer, so run it with `BIND_ADDR=0.0.0.0` and map only the host's loopback; pin a
-version tag (not `:latest`) for reproducible deploys:
-
-```sh
-docker run --rm -p 127.0.0.1:8082:8082 -e BIND_ADDR=0.0.0.0 \
-  -e UPSTREAM_API_KEY=<key> ghcr.io/1mb-dev/shim:1.0.0
 ```
 
 ## Dependencies

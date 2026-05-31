@@ -3,6 +3,16 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.0.1] — Drop the container/GHCR path (2026-05-31)
+
+shim installs cleanly via Homebrew and `go install`; the container image wasn't
+earning its keep for a single-binary CLI (and org policy blocked making the GHCR
+package public). Removed the image build so releases don't publish an unpullable
+artifact.
+
+### Removed
+- The `dockers_v2` GHCR image build from `.goreleaser.yaml`, the `Dockerfile`, and the docker setup/login steps from CI. `docker pull` lines dropped from the README and docsite.
+
 ## [1.0.0] — Stable contract; first public release (2026-05-31)
 
 1.0 is a contract promise, not a feature-complete one: the Anthropic-Messages

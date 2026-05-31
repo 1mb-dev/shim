@@ -3,8 +3,8 @@ name: release
 # Two jobs:
 #   validate  — every PR + branch push: test, lint, and a goreleaser DRY RUN
 #               (`release --snapshot`, builds everything, publishes nothing).
-#   release   — version tag AND the PUBLISH_ENABLED gate: build + publish to
-#               GHCR, a GitHub release, and the Homebrew tap.
+#   release   — version tag AND the PUBLISH_ENABLED gate: build the archives and
+#               publish a GitHub release.
 #
 # Publish is INERT until the public flip. The release job is double-gated: it
 # needs a `v*` tag AND repo variable PUBLISH_ENABLED == 'true'. Enabling publish
@@ -63,8 +63,6 @@ jobs:
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
           gitleaks git . --log-opts="--all" --redact --no-banner
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
@@ -74,10 +72,9 @@ jobs:
     # GATED: tag AND PUBLISH_ENABLED. Dormant until the public flip.
     if: ${{ startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
-    # Write perms scoped to this job only (publishing GitHub release + GHCR).
+    # Write perm scoped to this job only (publishing the GitHub release).
     permissions:
       contents: write
-      packages: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -89,13 +86,6 @@ jobs:
           go-version: stable
           check-latest: true
       - run: go test -race ./...
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"

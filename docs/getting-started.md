@@ -9,7 +9,6 @@ title: Getting started
 ```sh
 brew install 1mb-dev/tap/shim
 go install github.com/1mb-dev/shim/cmd/shim@latest
-docker pull ghcr.io/1mb-dev/shim
 ```
 
 Or from source (Go 1.25+):

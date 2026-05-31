@@ -31,29 +31,6 @@ archives:
 checksum:
   name_template: checksums.txt
 
-# Multi-arch FROM-scratch image (dockers_v2 builds + manifests natively). Needs
-# docker buildx + QEMU — present in CI (setup-buildx/qemu actions). SBOM off to
-# keep the pipeline dependency-light (no syft); revisit as a supply-chain add.
-dockers_v2:
-  - id: shim
-    ids: [shim]
-    dockerfile: Dockerfile
-    images:
-      - ghcr.io/1mb-dev/shim
-    tags:
-      - "{{ .Version }}"
-      # latest moves only on real releases — a prerelease (-rc/-beta) tag
-      # publishes its own version tag but must not poison :latest.
-      - "{{ if not .Prerelease }}latest{{ end }}"
-    platforms:
-      - linux/amd64
-      - linux/arm64
-    sbom: "false"
-    labels:
-      org.opencontainers.image.source: "https://github.com/1mb-dev/shim"
-      org.opencontainers.image.version: "{{ .Version }}"
-      org.opencontainers.image.licenses: MIT
-
 # Homebrew: shim is a build-from-source FORMULA hand-maintained in
 # 1mb-dev/homebrew-tap (Formula/shim.rb), matching that tap's other formulae.
 # It is NOT generated here — on a new release, bump the formula's `url` tag and
