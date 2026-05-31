@@ -116,10 +116,35 @@ func (s *Server) Start() error {
 		slog.String("addr", ln.Addr().String()),
 		slog.String("adapter", s.adapter.Name()),
 	)
+	s.warnIfExposed()
 	if err := s.http.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
+}
+
+// warnIfExposed loud-fails (at WARN) when shim is bound to a non-loopback
+// address. shim has no inbound auth, so a wide bind makes it an open relay to
+// the upstream (doubly so for keyless presets like Ollama). Not a hard block —
+// legitimate deployments front shim with an authenticating proxy (policy vs
+// mechanism) — just loud (thesis 2: don't silently do something dangerous).
+func (s *Server) warnIfExposed() {
+	if isLoopbackBind(s.cfg.BindAddr) {
+		return
+	}
+	s.log.Warn("bound to a non-loopback address with no inbound auth — anyone who can reach this port can use your upstream; put an authenticating proxy in front",
+		slog.String("bind_addr", s.cfg.BindAddr),
+	)
+}
+
+// isLoopbackBind reports whether addr is a loopback bind. "localhost" and any
+// loopback IP qualify; an empty or 0.0.0.0 bind (all interfaces) does not.
+func isLoopbackBind(addr string) bool {
+	if addr == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(addr)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Shutdown gracefully drains in-flight requests until ctx is done.

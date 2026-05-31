@@ -1116,6 +1116,38 @@ func TestStartShutdown(t *testing.T) {
 	}
 }
 
+func TestIsLoopbackBind(t *testing.T) {
+	for _, tc := range []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1", true}, {"::1", true}, {"localhost", true},
+		{"0.0.0.0", false}, {"192.168.1.10", false}, {"", false},
+	} {
+		if got := isLoopbackBind(tc.addr); got != tc.want {
+			t.Errorf("isLoopbackBind(%q) = %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+// TestWarnIfExposed: a non-loopback bind emits the no-inbound-auth WARN; a
+// loopback bind stays silent.
+func TestWarnIfExposed(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, logBuf := newTestServer(t, s) // BindAddr 127.0.0.1
+
+	srv.warnIfExposed()
+	if strings.Contains(logBuf.String(), "non-loopback") {
+		t.Errorf("loopback bind should not warn; got: %s", logBuf.String())
+	}
+	srv.cfg.BindAddr = "0.0.0.0"
+	srv.warnIfExposed()
+	if !strings.Contains(logBuf.String(), "non-loopback") {
+		t.Errorf("non-loopback bind should warn; got: %s", logBuf.String())
+	}
+}
+
 // TestRecoverPanics: a handler panic becomes a loud-failed 500 (Anthropic
 // envelope) + a recorded metric + a stack-bearing log line — never a silent
 // dropped connection (thesis 2).
