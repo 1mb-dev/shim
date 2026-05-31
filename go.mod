@@ -1,6 +1,6 @@
 module github.com/1mb-dev/shim
 
-go 1.22
+go 1.25.0
 
 require (
 	github.com/pkoukk/tiktoken-go v0.1.8

@@ -94,7 +94,7 @@ These all return a clear error — never silent forwarding.
 
 ## Install
 
-Build from source (Go 1.22+):
+Build from source (Go 1.25+):
 
 ```sh
 git clone https://github.com/1mb-dev/shim
