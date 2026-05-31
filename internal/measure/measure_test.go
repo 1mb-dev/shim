@@ -25,6 +25,9 @@ func TestNew_EmptySnapshot(t *testing.T) {
 	if len(s.RequestsSeen) != 0 {
 		t.Errorf("expected empty requests_seen, got %v", s.RequestsSeen)
 	}
+	if s.Panics != 0 {
+		t.Errorf("expected 0 panics, got %d", s.Panics)
+	}
 }
 
 func TestRecordLatency_BelowReservoirCap(t *testing.T) {
@@ -253,6 +256,15 @@ func TestRecordRequestSeen(t *testing.T) {
 	}
 	if got := s.RequestsSeen["/health"]; got != 1 {
 		t.Errorf("/health = %d, want 1", got)
+	}
+}
+
+func TestRecordPanic(t *testing.T) {
+	c := New()
+	c.RecordPanic()
+	c.RecordPanic()
+	if got := c.Snapshot().Panics; got != 2 {
+		t.Errorf("panics = %d, want 2", got)
 	}
 }
 

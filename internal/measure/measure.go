@@ -41,6 +41,7 @@ type Collector struct {
 	rewrites       map[string]int
 	upstreamErrors map[string]*upstreamErrorAgg
 	requestsSeen   map[string]int
+	panics         int
 	rng            *rand.Rand
 }
 
@@ -137,6 +138,16 @@ func (c *Collector) RecordUpstreamError(endpoint string, status int) {
 	a.byStatus[status]++
 }
 
+// RecordPanic increments the global recovered-panic counter. The server's
+// recovery middleware calls it when a handler panics — a panic that goes
+// uncounted is a silent failure (thesis 2). Global, not per-endpoint: a panic
+// may fire before routing resolves an endpoint.
+func (c *Collector) RecordPanic() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.panics++
+}
+
 // Snapshot returns a point-in-time view of all aggregates with percentiles
 // computed from current reservoir state. Returned maps are copies; callers
 // can mutate freely.
@@ -149,6 +160,7 @@ func (c *Collector) Snapshot() Snapshot {
 		Rewrites:       make(map[string]int, len(c.rewrites)),
 		UpstreamErrors: make(map[string]UpstreamErrorStats, len(c.upstreamErrors)),
 		RequestsSeen:   make(map[string]int, len(c.requestsSeen)),
+		Panics:         c.panics,
 	}
 	for ep, r := range c.latency {
 		snap.Latency[ep] = LatencyStats{
@@ -196,6 +208,7 @@ type Snapshot struct {
 	Rewrites       map[string]int                `json:"rewrites"`
 	UpstreamErrors map[string]UpstreamErrorStats `json:"upstream_errors"`
 	RequestsSeen   map[string]int                `json:"requests_seen"`
+	Panics         int                           `json:"panics_total"`
 }
 
 // UpstreamErrorStats reports counts of upstream non-2xx responses per

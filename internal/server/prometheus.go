@@ -38,6 +38,14 @@ func renderPrometheus(snap measure.Snapshot) []byte {
 	emitTokenDeltas(&b, snap.Tokens)
 	emitLatency(&b, snap.Latency)
 
+	// Global, label-free counter. Emitted only when non-zero, matching the
+	// omit-empty-family convention above (a zero Snapshot renders nothing).
+	if snap.Panics > 0 {
+		writeHeader(&b, "shim_panics_total",
+			"Handler panics recovered (thesis 2: a panic must never fail silently).", "counter")
+		writeSample(&b, "shim_panics_total", nil, float64(snap.Panics), true)
+	}
+
 	return []byte(b.String())
 }
 

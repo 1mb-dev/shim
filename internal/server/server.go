@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -63,7 +64,7 @@ func New(cfg *config.Config, log *slog.Logger, a adapter.Adapter) (*Server, erro
 
 	s.http = &http.Server{
 		Addr:              cfg.BindAddr + ":" + strconv.Itoa(cfg.Port),
-		Handler:           mux,
+		Handler:           s.recoverPanics(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		// WriteTimeout sized to outlive Client.Timeout below — so when an
 		// upstream call is slow, the cancellation surfaces as an
@@ -74,6 +75,30 @@ func New(cfg *config.Config, log *slog.Logger, a adapter.Adapter) (*Server, erro
 		MaxHeaderBytes: 1 << 20, // 1 MiB; matches net/http default, made explicit to pair with MAX_REQUEST_BYTES.
 	}
 	return s, nil
+}
+
+// recoverPanics wraps the mux so a panic in any handler becomes a loud-failed
+// 500 (Anthropic-shaped) plus a recorded metric and a stack-bearing log line,
+// instead of a silently dropped connection (thesis 2: never fail silently).
+// Transport-level — no dialect knowledge, no body inspection — so the locked
+// translator seam is untouched and both dialects share it. Best-effort: if a
+// handler already wrote a partial response before panicking, the 500 write is
+// superfluous, but the log + metric still fire.
+func (s *Server) recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.measure.RecordPanic()
+				s.log.Error("handler panic recovered",
+					slog.Any("panic", rec),
+					slog.String("path", r.URL.Path),
+					slog.String("stack", string(debug.Stack())),
+				)
+				writeError(w, s.log, http.StatusInternalServerError, errAPI, "internal error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Addr returns the bind address the server will listen on.

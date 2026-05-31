@@ -1116,6 +1116,43 @@ func TestStartShutdown(t *testing.T) {
 	}
 }
 
+// TestRecoverPanics: a handler panic becomes a loud-failed 500 (Anthropic
+// envelope) + a recorded metric + a stack-bearing log line — never a silent
+// dropped connection (thesis 2).
+func TestRecoverPanics(t *testing.T) {
+	s := newStub()
+	defer s.close()
+	srv, logBuf := newTestServer(t, s)
+
+	h := srv.recoverPanics(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", nil))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	var env struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("body not JSON: %v (%s)", err, rec.Body.String())
+	}
+	if env.Type != "error" || env.Error.Type != string(translate.ErrTypeAPI) {
+		t.Errorf("envelope = %+v, want type=error error.type=%s", env, translate.ErrTypeAPI)
+	}
+	if got := srv.measure.Snapshot().Panics; got != 1 {
+		t.Errorf("panics metric = %d, want 1", got)
+	}
+	if log := logBuf.String(); !strings.Contains(log, "handler panic recovered") || !strings.Contains(log, "boom") {
+		t.Errorf("expected panic log with value; got: %s", log)
+	}
+}
+
 // TestNew_HTTPClientTuning: fences the Stage 2 transport-tuning values so
 // regressions (or future "let's simplify the client" cleanups) surface as
 // failed tests rather than silent perf drift.

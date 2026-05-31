@@ -283,7 +283,8 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
             "class_5xx": 0,
             "by_status": {"400": 1}
         }
-    }
+    },
+    "panics_total": 0
 }
 ```
 
@@ -320,6 +321,10 @@ curl -s http://127.0.0.1:8082/v1/metrics | python3 -m json.tool
   `by_status` is the per-code breakdown for drill-down. The companion
   diagnostic — the upstream body itself — is captured on the
   `upstream error` log line; see "Errors and debugging" below.
+- `panics_total` counts handler panics the server recovered: instead of a
+  silently dropped connection, a panic becomes an Anthropic-shaped 500, a
+  stack-bearing `handler panic recovered` log line, and this counter (thesis 2).
+  A non-zero value is always a bug to investigate.
 
 **Caveats.** The endpoint is loopback-only by default (no auth — matches
 `/health`). State is in-memory only and resets on restart. The JSON shape
@@ -352,6 +357,7 @@ shim_latency_seconds{endpoint="/v1/messages",quantile="0.95"} 0.980266
 | `shim_token_observations_total` | counter | `endpoint` | responses with usage recorded |
 | `shim_latency_seconds` | gauge | `endpoint`, `quantile` | latency percentile (reservoir estimate, seconds) |
 | `shim_latency_observations_total` | counter | `endpoint` | latency observations |
+| `shim_panics_total` | counter | _(none)_ | handler panics recovered (emitted only when non-zero) |
 
 Latency is a **gauge** with a `quantile` label, not a summary: the reservoir
 yields point-in-time percentiles, not histogram buckets — a gauge is the honest

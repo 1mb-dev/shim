@@ -83,6 +83,18 @@ func TestRenderPrometheus_Empty(t *testing.T) {
 	}
 }
 
+// TestRenderPrometheus_Panics: the global label-free panics counter emits only
+// when non-zero, staying absent at zero per the omit-empty-family convention.
+func TestRenderPrometheus_Panics(t *testing.T) {
+	got := string(renderPrometheus(measure.Snapshot{Panics: 3}))
+	if !strings.Contains(got, "# TYPE shim_panics_total counter\nshim_panics_total 3\n") {
+		t.Errorf("panics>0 should emit shim_panics_total 3; got:\n%s", got)
+	}
+	if strings.Contains(string(renderPrometheus(measure.Snapshot{})), "shim_panics_total") {
+		t.Error("zero panics should not emit shim_panics_total")
+	}
+}
+
 // TestMetricsPrometheus_Endpoint drives a real request through the stub server,
 // then scrapes /metrics — exercising the handler wiring + the full record→render
 // path end to end (requests_seen, the model rewrite, token delta).
