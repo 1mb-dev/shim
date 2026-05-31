@@ -30,8 +30,10 @@ Then see what it did: `curl -s localhost:8082/v1/metrics | python3 -m json.tool`
 
 ## Docs
 
+- [Getting started]({{ '/getting-started.html' | relative_url }}) — install, configure, run, verify
+- [Configuration]({{ '/configuration.html' | relative_url }}) — every variable and the preset reference
 - [Measurement reference]({{ '/measurement.html' | relative_url }}) — `/v1/metrics`, Prometheus, errors, token counting
-- [README](https://github.com/1mb-dev/shim#readme) — configuration, security model, limitations
+- [README](https://github.com/1mb-dev/shim#readme) — overview, security model, limitations
 - [Architecture decisions](https://github.com/1mb-dev/shim/tree/main/docs/adr)
 - [Changelog](https://github.com/1mb-dev/shim/blob/main/CHANGELOG.md)
 - [Source](https://github.com/1mb-dev/shim)
