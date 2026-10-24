@@ -44,10 +44,9 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
-          # Build with the latest patch of the current Go major (not the go.mod floor) so
-          # published artifacts + the govulncheck gate get current stdlib security patches.
-          # A pinned major moves by a commit, not by a Go release.
-          go-version: '1.27'
+          # golangci-lint v2.12.2 is built with Go 1.26 and panics on 1.27 sources, so
+          # validate stays on 1.26 until lint moves; the release job builds on 1.27.
+          go-version: '1.26'
           check-latest: true
       - run: go test -race ./...
       - uses: golangci/golangci-lint-action@v9
