@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # A Dependabot auto-merge is pushed by GITHUB_TOKEN, which starts no push run, so main is
+  # unverified until the next daily run. Dispatch verifies it on demand.
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: 1mb-dev/.github/.github/workflows/ci-go.yml@main
+
+  # Builds every release archive without publishing, so a broken .goreleaser.yaml fails
+  # here rather than on the tag.
+  snapshot:
+    name: Release snapshot
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27"
+          check-latest: true
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
