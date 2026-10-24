@@ -110,7 +110,7 @@ brew install 1mb-dev/tap/shim
 go install github.com/1mb-dev/shim/cmd/shim@latest
 ```
 
-Or build from source (Go 1.25+):
+Or build from source (Go 1.26+):
 
 ```sh
 git clone https://github.com/1mb-dev/shim && cd shim

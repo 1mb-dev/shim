@@ -3,6 +3,11 @@
 All notable changes will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+- Building from source requires Go 1.26 or later (was 1.25, now end of life).
+
 ## [1.0.2] - Rebuild on Go 1.27 (2026-10-24)
 
 The v1.0.1 binaries were built on Go 1.26.3, which carries stdlib advisories fixed since, among them GO-2026-6809 (`crypto/x509` certificate verification, which shim runs on every upstream HTTPS request). No code changes. Homebrew and `go install` users build with their own Go and were not on 1.26.3.
